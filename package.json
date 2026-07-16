@@ -1,0 +1,15 @@
+{
+  "name": "quickpick-au",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Random number generator PWA for Australian lottery games",
+  "scripts": {
+    "icons": "node scripts/make-icons.mjs",
+    "test": "node test/rng.test.mjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "sharp": "^0.33.5"
+  }
+}

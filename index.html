@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>QuickPick AU</title>
+  <meta name="description" content="Cryptographically secure quick picks for Australian lotto games, with an animated ball-machine draw. Works offline." />
+  <meta name="theme-color" content="#0e1c4e" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+
+  <!-- iOS home screen -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="QuickPick" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1>QuickPick <span class="au">AU</span></h1>
+      <p class="tagline">Crypto-random picks. The machine is just for show.</p>
+    </header>
+
+    <!-- 1. Game selector -->
+    <nav class="chips" id="chips" aria-label="Choose game"></nav>
+
+    <!-- Ball machine -->
+    <section class="machine" aria-label="Ball machine">
+      <div class="chamber-wrap">
+        <canvas id="chamber" aria-hidden="true"></canvas>
+        <div class="skip-hint" id="skipHint" hidden>tap to skip</div>
+      </div>
+      <div class="chamber-wrap pb-wrap" id="pbWrap" hidden>
+        <div class="pb-label">POWERBALL BARREL</div>
+        <canvas id="pbChamber" aria-hidden="true"></canvas>
+      </div>
+    </section>
+
+    <!-- 2 + 3. Controls -->
+    <section class="card controls">
+      <div class="ctl-row">
+        <div class="ctl-label">
+          <span>Lines per draw</span>
+          <span class="spec" id="qtyVal">1</span>
+        </div>
+        <div class="stepper" data-step="qty">
+          <button type="button" class="step-btn" data-dir="-1" aria-label="Fewer lines">−</button>
+          <input type="range" id="qtySlider" min="1" max="50" step="1" value="1" aria-label="Lines per draw" />
+          <button type="button" class="step-btn" data-dir="1" aria-label="More lines">+</button>
+        </div>
+      </div>
+
+      <div id="customCtls" hidden>
+        <div class="ctl-row">
+          <div class="ctl-label"><span>Range: 1 to</span><span class="spec" id="cPoolVal">45</span></div>
+          <div class="stepper" data-step="cpool">
+            <button type="button" class="step-btn" data-dir="-1" aria-label="Smaller range">−</button>
+            <div class="step-track"></div>
+            <button type="button" class="step-btn" data-dir="1" aria-label="Larger range">+</button>
+          </div>
+        </div>
+        <div class="ctl-row">
+          <div class="ctl-label"><span>How many numbers</span><span class="spec" id="cPicksVal">6</span></div>
+          <div class="stepper" data-step="cpicks">
+            <button type="button" class="step-btn" data-dir="-1" aria-label="Fewer numbers">−</button>
+            <div class="step-track"></div>
+            <button type="button" class="step-btn" data-dir="1" aria-label="More numbers">+</button>
+          </div>
+        </div>
+        <div class="ctl-row toggle-row">
+          <label class="ctl-label" for="cExtraOn"><span>Extra ball</span></label>
+          <label class="switch">
+            <input type="checkbox" id="cExtraOn" />
+            <span class="knob" aria-hidden="true"></span>
+          </label>
+        </div>
+        <div class="ctl-row" id="cExtraRow" hidden>
+          <div class="ctl-label"><span>Extra ball range: 1 to</span><span class="spec" id="cExtraPoolVal">20</span></div>
+          <div class="stepper" data-step="cextrapool">
+            <button type="button" class="step-btn" data-dir="-1" aria-label="Smaller extra range">−</button>
+            <div class="step-track"></div>
+            <button type="button" class="step-btn" data-dir="1" aria-label="Larger extra range">+</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="matrix-line" id="matrixLine">6 numbers from 1–45</p>
+    </section>
+
+    <!-- Results -->
+    <section class="card results" id="resultsCard" hidden>
+      <div class="results-head">
+        <h2>Your numbers</h2>
+        <button type="button" class="ghost-btn" id="copyAllBtn">Copy all</button>
+      </div>
+      <div id="resultsList" aria-live="polite"></div>
+    </section>
+
+    <!-- History -->
+    <details class="card history" id="historyBox">
+      <summary>
+        <span>History</span>
+        <span class="spec" id="historyCount">0</span>
+      </summary>
+      <div id="historyList"></div>
+      <button type="button" class="ghost-btn danger" id="clearHistoryBtn">Clear history</button>
+    </details>
+
+    <footer class="foot">
+      Random picks don't change the odds. Gamble responsibly —
+      <a href="https://www.gamblinghelponline.org.au" rel="noopener">gamblinghelponline.org.au</a>
+    </footer>
+  </div>
+
+  <!-- 4. DRAW -->
+  <div class="drawbar">
+    <button type="button" id="drawBtn" class="draw-btn">DRAW</button>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
