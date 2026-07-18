@@ -25,6 +25,14 @@ const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const utc = (iso) => Date.parse(`${iso}T00:00:00Z`);
 const dow = (iso) => new Date(utc(iso)).getUTCDay();
 
+/* C(n,k) — largest use here is C(47,7) ≈ 6.3e7, exact in doubles. */
+function choose(n, k) {
+  if (k < 0 || k > n) return 0;
+  let r = 1;
+  for (let i = 1; i <= k; i++) r = (r * (n - k + i)) / i;
+  return Math.round(r);
+}
+
 /* Cadence model: weekday sets per era segment. `from: null` = era start;
  * `to: null` = latest draw. Weekday Windfall gains Friday at #4392. */
 const CADENCE = {
@@ -165,7 +173,31 @@ for (const [key, game] of Object.entries(ORACLE_GAMES)) {
     console.log("     weekday check: every era draw falls on a scheduled weekday");
   }
 
-  /* 7 — draw-number step histogram (informational; gaps ≠ missing draws when
+  /* 7 — consecutive-pair rate over the REAL era draws (mains only) vs the
+   *     uniform closed form 1 − C(n−k+1,k)/C(n,k). Real draws are uniform,
+   *     so observed should track the closed form within binomial noise —
+   *     a real-world confirmation of the adjacency math. REPORT-ONLY. */
+  {
+    const k = m.drawn, n = m.pool;
+    const closedForm = 1 - choose(n - k + 1, k) / choose(n, k);
+    let withAdjacent = 0;
+    for (const d of era.draws) {
+      const mains = [...d.numbers].sort((a, b) => a - b);
+      for (let i = 1; i < mains.length; i++) {
+        if (mains[i] - mains[i - 1] === 1) { withAdjacent++; break; }
+      }
+    }
+    const observed = withAdjacent / era.total;
+    const se = Math.sqrt((closedForm * (1 - closedForm)) / era.total);
+    console.log(
+      `     consecutive-pair rate (${k}/${n} mains, real era draws): observed ${(observed * 100).toFixed(1)}% ` +
+      `vs uniform closed form ${(closedForm * 100).toFixed(1)}% ` +
+      `(Δ ${((observed - closedForm) >= 0 ? "+" : "")}${((observed - closedForm) * 100).toFixed(1)}pp, ` +
+      `±1σ ${(se * 100).toFixed(1)}pp @ n=${fmt(era.total)}) — report-only`
+    );
+  }
+
+  /* 8 — draw-number step histogram (informational; gaps ≠ missing draws when
    *     the number series is shared with other products, e.g. TattsLotto). */
   const steps = new Map();
   for (let i = 1; i < era.draws.length; i++) {

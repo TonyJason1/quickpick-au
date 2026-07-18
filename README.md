@@ -23,7 +23,7 @@ Second tab: era-aware "predictor" over the real draw history. **For entertainmen
 
 > **weight(ball) = 1 + 0.35 × normFreq + 0.15 × normGap**
 
-normFreq = min-max-normalised era frequency (mains only), normGap = min-max-normalised current absence streak; drawn with the crypto rejection sampler, unique, sorted ascending. Every weight sits in [1, 1.5], so no ball is ever excluded and the max/min tilt ratio never exceeds 1.5 (chi-square-verified against the weights over 100k samples in tests). Legacy HOT/COLD/OVERDUE/ORACLE pickers remain exported from `js/predictor.js` for tests and a possible future advanced toggle — no UI entry.
+normFreq = min-max-normalised era frequency (mains only), normGap = min-max-normalised current absence streak; drawn with the crypto rejection sampler, unique, sorted ascending. Every weight sits in [1, 1.5], so no ball is ever excluded and the max/min tilt ratio never exceeds 1.5 (chi-square-verified against the weights over 100k samples in tests; a second 100k-per-game test pins the consecutive-pair fraction to the uniform closed form 1 − C(n−k+1,k)/C(n,k) within ±1pp — an adjacency-bias tripwire). The audit also reports the consecutive-pair rate of the real era draws vs the same closed form per game (report-only confirmation). Legacy HOT/COLD/OVERDUE/ORACLE pickers remain exported from `js/predictor.js` for tests and a possible future advanced toggle — no UI entry.
 
 Play formats: TattsLotto 7, Oz Lotto 8, Powerball 7 mains (PowerHit — all 20 Powerballs covered, PB barrel hidden), Set for Life 2×7 independent draws (overlap between lines allowed, like two real QuickPicks), Weekday Windfall 7. Tap a ball for its stats ("drawn N× · last seen G draws ago" — both signals feeding the pick). Stats count main numbers only.
 

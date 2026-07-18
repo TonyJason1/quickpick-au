@@ -436,6 +436,51 @@ check("unified: set for life lines are independent (overlap occurs, like real Qu
   ok(overlapped > 0, "30 independent pairs never overlapped — draws look forced-disjoint");
 });
 
+/* -------------------------- 5b. adjacency distribution (anti-bias guard) */
+
+/* C(n,k) — largest value used is C(47,8) ≈ 3.1e8, exact in doubles. */
+function choose(n, k) {
+  if (k < 0 || k > n) return 0;
+  let r = 1;
+  for (let i = 1; i <= k; i++) r = (r * (n - k + i)) / i;
+  return Math.round(r);
+}
+
+/* Doctrine pins for P(line contains ≥1 consecutive pair) under a uniform
+ * draw: 1 − C(n−k+1,k)/C(n,k). A drifted pin means the pick counts changed;
+ * an observed fraction off by more than ±1 percentage point means the
+ * sampler has an adjacency bias bug. The unified weighting (ratio ≤ 1.5,
+ * spatially noise-like across ball values) shifts the true fraction ≲0.4pp,
+ * and binomial noise at 100k is ~0.15pp — so ±1pp never flakes but catches
+ * any structural bias (e.g. a sort/dedup bug suppressing neighbours). */
+const ADJACENCY_DOCTRINE = {
+  tattslotto: 0.661, ozlotto: 0.755, powerball: 0.768,
+  setforlife: 0.671, weekdaywindfall: 0.661
+};
+
+for (const [key, game] of Object.entries(ORACLE_GAMES)) {
+  check(`adjacency: ${key} — 100k unified draws within ±1pp of closed form`, () => {
+    const n = game.matrix.pool, k = game.picks;
+    const closedForm = 1 - choose(n - k + 1, k) / choose(n, k);
+    ok(Math.abs(closedForm - ADJACENCY_DOCTRINE[key]) < 0.0006,
+      `closed form ${closedForm.toFixed(5)} drifted from doctrine pin ${ADJACENCY_DOCTRINE[key]} — did the pick counts change?`);
+    const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+    const stats = computeStats(era.draws, game.matrix.pool);
+    const N = 100_000;
+    let withAdjacent = 0;
+    for (let i = 0; i < N; i++) {
+      const line = pickOracleUnified(stats, k); // sorted ascending
+      for (let j = 1; j < line.length; j++) {
+        if (line[j] - line[j - 1] === 1) { withAdjacent++; break; }
+      }
+    }
+    const fraction = withAdjacent / N;
+    ok(Math.abs(fraction - closedForm) <= 0.01,
+      `adjacency fraction ${fraction.toFixed(4)} vs closed form ${closedForm.toFixed(4)} ` +
+      `(|Δ| ${Math.abs(fraction - closedForm).toFixed(4)} > 0.01) — adjacency bias bug`);
+  });
+}
+
 /* ----------------------------------- 6. legacy oracle weighting (exported) */
 
 check("oracle: exact weight formula (1 + 0.5 × min-max normalised freq)", () => {
