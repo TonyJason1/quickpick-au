@@ -27,6 +27,12 @@
       <p class="tagline">Crypto-random picks. The machine is just for show.</p>
     </header>
 
+    <!-- Section tabs -->
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" class="tab" id="tabPick" role="tab" aria-selected="true">Quick Pick</button>
+      <button type="button" class="tab" id="tabOracle" role="tab" aria-selected="false">The Oracle</button>
+    </nav>
+
     <!-- 1. Game selector -->
     <nav class="chips" id="chips" aria-label="Choose game"></nav>
 
@@ -42,8 +48,21 @@
       </div>
     </section>
 
+    <!-- The Oracle — era-stat pick modes -->
+    <section class="card oracle-card" id="oracleCard" hidden>
+      <div class="mode-seg" role="radiogroup" aria-label="Oracle mode" id="modeSeg">
+        <button type="button" class="mode-btn" data-mode="hot" role="radio" aria-checked="false">HOT</button>
+        <button type="button" class="mode-btn" data-mode="cold" role="radio" aria-checked="false">COLD</button>
+        <button type="button" class="mode-btn" data-mode="overdue" role="radio" aria-checked="false">OVERDUE</button>
+        <button type="button" class="mode-btn" data-mode="oracle" role="radio" aria-checked="true">ORACLE</button>
+      </div>
+      <p class="mode-desc" id="modeDesc"></p>
+      <p class="matrix-line oracle-status" id="oracleStatus">Loading draw history…</p>
+      <p class="matrix-line pb-note" id="pbNote" hidden>PowerHit play: 7 mains — <strong>all 20 Powerballs covered</strong>.</p>
+    </section>
+
     <!-- 2 + 3. Controls -->
-    <section class="card controls">
+    <section class="card controls" id="pickControls">
       <div class="ctl-row">
         <div class="ctl-label">
           <span>Lines per draw</span>
@@ -118,9 +137,10 @@
     </footer>
   </div>
 
-  <!-- 4. DRAW -->
+  <!-- 4. DRAW (fixed bar; the Oracle disclaimer rides in it as a fixed footer) -->
   <div class="drawbar">
     <button type="button" id="drawBtn" class="draw-btn">DRAW</button>
+    <p class="bar-note" id="barNote" hidden>For entertainment only — every combination has identical odds.</p>
   </div>
 
   <script type="module" src="app.js"></script>

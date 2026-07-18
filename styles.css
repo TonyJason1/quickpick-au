@@ -27,7 +27,7 @@ body {
 .app {
   max-width: 520px;
   margin: 0 auto;
-  padding: 12px 14px 132px;   /* room for sticky draw bar */
+  padding: 12px 14px 150px;   /* room for sticky draw bar + its note line */
   padding-left: max(14px, env(safe-area-inset-left));
   padding-right: max(14px, env(safe-area-inset-right));
 }
@@ -42,6 +42,29 @@ body {
 }
 .topbar .au { color: var(--accent); transition: color .25s; }
 .tagline { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+/* ---------- section tabs ---------- */
+.tabs { display: flex; gap: 8px; padding: 10px 2px 0; }
+.tab {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--navy-2);
+  color: var(--muted);
+  font: 700 14px/1 inherit;
+  font-family: inherit;
+  letter-spacing: .04em;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color .2s, color .2s;
+}
+.tab[aria-selected="true"] {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.35);
+}
 
 /* ---------- game chips ---------- */
 .chips {
@@ -158,6 +181,62 @@ input[type="range"] {
 
 .matrix-line { margin: 12px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 
+/* ---------- The Oracle ---------- */
+.mode-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mode-btn {
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--navy-2);
+  color: var(--muted);
+  font: 800 12px/1 inherit;
+  font-family: inherit;
+  letter-spacing: .08em;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color .2s, color .2s;
+}
+.mode-btn[aria-checked="true"] {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.35);
+}
+.mode-desc { margin: 10px 0 0; font-size: 13px; text-align: center; min-height: 1.4em; }
+.oracle-status { margin-top: 6px; }
+.pb-note { margin-top: 8px; color: var(--extra); }
+.pb-note strong { color: var(--extra); }
+.pb-note-row {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--extra);
+  text-align: center;
+}
+
+/* per-ball stat tooltip (tap a pill on an Oracle draw) */
+.results { position: relative; }
+.pill[data-tip] { cursor: help; }
+.tip-bubble {
+  position: absolute;
+  z-index: 5;
+  background: #0a143a;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translate(-50%, -100%);
+  opacity: 0;
+  transition: opacity .15s;
+}
+.tip-bubble.show { opacity: 1; }
+
 /* ---------- results ---------- */
 .results-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .results-head h2 { margin: 0; font-size: 15px; letter-spacing: .06em; }
@@ -241,6 +320,13 @@ input[type="range"] {
 }
 .draw-btn:active { transform: scale(.98); }
 .draw-btn[disabled] { opacity: .55; }
+.bar-note {
+  margin: 8px auto 0;
+  max-width: 492px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+}
 
 /* ---------- footer ---------- */
 .foot { text-align: center; font-size: 11.5px; color: var(--muted); padding: 6px 8px 4px; }

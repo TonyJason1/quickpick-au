@@ -1,0 +1,46 @@
+# Weekly draw-history refresh for The Oracle.
+# Fetches the latest results from The Lott's public API, validates them with
+# the predictor test suite, and commits data/draws/*.json when they changed.
+# No sw.js VERSION bump needed — clients pick the data up via the service
+# worker's stale-while-revalidate rule for data/draws/.
+name: Update draw history
+
+on:
+  schedule:
+    - cron: "0 18 * * 0" # Sunday 18:00 UTC = Monday 04:00 AEST, after Saturday night's draws
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-draws
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch latest draws (incremental)
+        run: node scripts/update-draws.mjs
+
+      - name: Validate updated data
+        run: node test/predictor.test.mjs
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898994+github-actions[bot]@users.noreply.github.com"
+          git add data/draws
+          if git diff --cached --quiet; then
+            echo "No new draws this week."
+          else
+            git commit -m "data: weekly draw history update"
+            git push
+          fi

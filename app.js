@@ -1,6 +1,11 @@
 /* QuickPick AU — app logic. Selection is ALWAYS the CSPRNG (rng.js);
- * the ball machine is presentation only. */
+ * the ball machine is presentation only. The Oracle tab shapes rankings and
+ * weights from era-filtered draw stats (js/predictor.js) — entertainment
+ * only; every combination has identical odds. */
 import { drawLine, shuffled } from "./rng.js";
+import {
+  ORACLE_GAMES, MODES, generateLines, getOracleContext, tooltipText
+} from "./js/predictor.js";
 
 /* ---------------------------------------------------------------- games */
 const GAMES = {
@@ -22,6 +27,8 @@ const state = {
   game: "tattslotto",
   qty: 1,
   custom: { pool: 45, picks: 6, extraOn: false, extraPool: 20 },
+  view: "pick",          // "pick" | "oracle"
+  mode: "oracle",        // Oracle mode: hot | cold | overdue | oracle
   animating: false
 };
 
@@ -30,6 +37,8 @@ try {
   if (saved && GAMES[saved.game]) {
     state.game = saved.game;
     state.qty = clamp(saved.qty | 0, 1, 50);
+    if (saved.view === "oracle") state.view = "oracle";
+    if (MODES.includes(saved.mode)) state.mode = saved.mode;
     if (saved.custom) {
       state.custom.pool = clamp(saved.custom.pool | 0, 2, 99);
       state.custom.picks = clamp(saved.custom.picks | 0, 1, Math.min(20, state.custom.pool - 1));
@@ -42,7 +51,8 @@ try {
 function savePrefs() {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify({
-      game: state.game, qty: state.qty, custom: state.custom
+      game: state.game, qty: state.qty, custom: state.custom,
+      view: state.view, mode: state.mode
     }));
   } catch { /* storage full/blocked — non-fatal */ }
 }
@@ -74,7 +84,10 @@ const els = {
   cExtraOn: $("cExtraOn"), cExtraRow: $("cExtraRow"), cExtraPoolVal: $("cExtraPoolVal"),
   matrixLine: $("matrixLine"), resultsCard: $("resultsCard"), resultsList: $("resultsList"),
   copyAllBtn: $("copyAllBtn"), historyBox: $("historyBox"), historyList: $("historyList"),
-  historyCount: $("historyCount"), clearHistoryBtn: $("clearHistoryBtn"), drawBtn: $("drawBtn")
+  historyCount: $("historyCount"), clearHistoryBtn: $("clearHistoryBtn"), drawBtn: $("drawBtn"),
+  tabPick: $("tabPick"), tabOracle: $("tabOracle"), oracleCard: $("oracleCard"),
+  pickControls: $("pickControls"), modeSeg: $("modeSeg"), modeDesc: $("modeDesc"),
+  oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote")
 };
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -304,6 +317,7 @@ function buildChips() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip";
+    b.dataset.key = key;
     b.style.setProperty("--chip-c", g.color);
     b.setAttribute("aria-pressed", String(key === state.game));
     b.innerHTML = `<span class="dot" aria-hidden="true"></span>${g.name}`;
@@ -325,14 +339,81 @@ function applyGameToUI() {
   const spec = currentSpec();
   document.documentElement.style.setProperty("--accent", spec.color);
   els.customCtls.hidden = state.game !== "custom";
-  els.pbWrap.hidden = !(spec.extra && spec.extra.pool > 1);
+  // Oracle draws mains only — the PB barrel stays parked (PowerHit covers all 20).
+  els.pbWrap.hidden = !(spec.extra && spec.extra.pool > 1) || state.view === "oracle";
   chamber.setPool(spec.pool, spec.color);
   if (!els.pbWrap.hidden) pbChamber.setPool(spec.extra.pool, spec.color);
   els.matrixLine.textContent =
     `${spec.picks} numbers from 1–${spec.pool}` +
     (spec.extra ? ` + 1 ${spec.extra.label} from 1–${spec.extra.pool}` : "");
   syncCustomUI();
+  if (state.view === "oracle") refreshOraclePanel();
 }
+
+/* --------------------------------------------------------- The Oracle */
+const MODE_META = {
+  hot:     { label: "HOT",     desc: "The most-drawn numbers of the current era." },
+  cold:    { label: "COLD",    desc: "The least-drawn numbers of the current era." },
+  overdue: { label: "OVERDUE", desc: "Longest time since last drawn." },
+  oracle:  { label: "ORACLE",  desc: "Secure random draw, gently tilted toward era-hot numbers." }
+};
+
+function selectView(view) {
+  state.view = view;
+  savePrefs();
+  const oracle = view === "oracle";
+  // The Oracle has no draw history for Custom — fall back to a real game.
+  if (oracle && state.game === "custom") selectGame("tattslotto");
+  els.tabPick.setAttribute("aria-selected", String(!oracle));
+  els.tabOracle.setAttribute("aria-selected", String(oracle));
+  els.oracleCard.hidden = !oracle;
+  els.pickControls.hidden = oracle;
+  els.barNote.hidden = !oracle;
+  els.drawBtn.textContent = oracle ? "ASK THE ORACLE" : "DRAW";
+  for (const chip of els.chips.children) {
+    if (chip.dataset.key === "custom") chip.hidden = oracle;
+  }
+  syncModeSeg();
+  applyGameToUI();
+}
+
+function syncModeSeg() {
+  for (const btn of els.modeSeg.querySelectorAll(".mode-btn")) {
+    btn.setAttribute("aria-checked", String(btn.dataset.mode === state.mode));
+  }
+  els.modeDesc.textContent = MODE_META[state.mode].desc;
+}
+
+/** Preload the current game's era stats and surface them in the status line. */
+async function refreshOraclePanel() {
+  const gameKey = state.game;
+  const game = ORACLE_GAMES[gameKey];
+  if (!game) return;
+  els.pbNote.hidden = !game.powerhit;
+  els.oracleStatus.textContent = "Consulting the archive…";
+  try {
+    const ctx = await getOracleContext(gameKey);
+    if (state.game !== gameKey || state.view !== "oracle") return; // stale
+    const era = ctx.era;
+    els.oracleStatus.textContent =
+      `Era: ${era.total.toLocaleString("en-AU")} draws since ${era.startDate}` +
+      (game.hasLegacy ? " (incl. Mon & Wed Lotto)" : "");
+  } catch {
+    if (state.game !== gameKey || state.view !== "oracle") return;
+    els.oracleStatus.textContent =
+      "Draw history unavailable — connect once to fetch it, then The Oracle works offline.";
+  }
+}
+
+els.tabPick.addEventListener("click", () => { if (!state.animating) selectView("pick"); });
+els.tabOracle.addEventListener("click", () => { if (!state.animating) selectView("oracle"); });
+els.modeSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest(".mode-btn");
+  if (!btn || state.animating) return;
+  state.mode = btn.dataset.mode;
+  savePrefs();
+  syncModeSeg();
+});
 
 /* ----------------------------------------------------------- controls */
 function syncQty() {
@@ -398,7 +479,9 @@ for (const cv of [els.chamber, els.pbChamber]) {
   cv.addEventListener("pointerdown", () => { if (state.animating) skipRequested = true; });
 }
 
-els.drawBtn.addEventListener("click", onDraw);
+els.drawBtn.addEventListener("click", () =>
+  state.view === "oracle" ? onOracleDraw() : onDraw()
+);
 
 async function onDraw() {
   if (state.animating) return;
@@ -446,6 +529,61 @@ async function onDraw() {
   }
 }
 
+/** Oracle draw: era-stat lines through the same ball-machine reveal. */
+async function onOracleDraw() {
+  if (state.animating) return;
+  const gameKey = state.game;
+  const game = ORACLE_GAMES[gameKey];
+  if (!game) return;
+
+  els.drawBtn.disabled = true;
+  let ctx;
+  try {
+    ctx = await getOracleContext(gameKey);
+  } catch {
+    els.oracleStatus.textContent =
+      "Draw history unavailable — connect once to fetch it, then The Oracle works offline.";
+    els.drawBtn.disabled = false;
+    return;
+  }
+
+  const g = GAMES[gameKey];
+  const spec = {
+    name: `${g.name} — ${MODE_META[state.mode].label}`,
+    color: g.color,
+    pool: game.matrix.pool,
+    picks: game.picks,
+    extra: null,
+    oracle: { ctx },
+    powerhitNote: !!game.powerhit
+  };
+  const lines = generateLines(ctx.stats, game, state.mode)
+    .map((nums) => ({ nums, extra: null }));
+
+  pushHistory(spec, lines);
+  renderHistory();
+
+  const instant = reduceMotion.matches;
+  renderResults(spec, lines, !instant);
+  if (instant) { chamber.renderOnce(); els.drawBtn.disabled = false; return; }
+
+  state.animating = true;
+  skipRequested = false;
+  els.skipHint.hidden = false;
+  startLoop();
+  try {
+    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot("main", n));
+    if (skipRequested) fillAllRemaining(lines[0]);
+  } finally {
+    chamber.flushExtractions();
+    finalizeLineOne(spec, lines[0]);
+    state.animating = false;
+    els.drawBtn.disabled = false;
+    els.skipHint.hidden = true;
+    chamber.setPool(spec.pool, spec.color);
+  }
+}
+
 async function animateLine(ch, nums, onRelease) {
   ch.mixUntil = performance.now() + 1500; // vigorous mixing
   let waited = 0;
@@ -466,13 +604,27 @@ async function animateLine(ch, nums, onRelease) {
 /* ------------------------------------------------------------ results */
 let lastDraw = null; // { spec, lines }
 
-function pillHTML(n, extra = false, placeholder = false) {
-  return `<span class="pill${extra ? " extra" : ""}${placeholder ? " placeholder" : ""}">${placeholder ? "" : n}</span>`;
+function pillHTML(n, extra = false, placeholder = false, tip = null) {
+  const tipAttrs = tip ? ` data-tip="${tip}" title="${tip}" aria-label="Ball ${n} — ${tip}"` : "";
+  return `<span class="pill${extra ? " extra" : ""}${placeholder ? " placeholder" : ""}"${tipAttrs}>${placeholder ? "" : n}</span>`;
+}
+
+/** Pills for one line; Oracle draws carry per-ball era-stat tooltips. */
+function pillsHTML(spec, line, placeholder) {
+  const tipFor = spec.oracle
+    ? (n) => tooltipText(spec.oracle.ctx.stats, spec.oracle.ctx.era, n)
+    : () => null;
+  let pills = line.nums.map((n) => pillHTML(n, false, placeholder, tipFor(n))).join("");
+  if (line.extra != null) {
+    pills += `<span class="extra-sep">${spec.extra.label}</span>` + pillHTML(line.extra, true, placeholder);
+  }
+  return pills;
 }
 
 function lineText(spec, line) {
   let s = line.nums.join(" ");
   if (line.extra != null) s += ` | ${spec.extra.label} ${line.extra}`;
+  if (spec.powerhitNote) s += " | PowerHit (all 20 Powerballs)";
   return s;
 }
 
@@ -485,19 +637,21 @@ function renderResults(spec, lines, animateFirst) {
     row.className = "line";
     row.dataset.idx = String(i);
     const ph = animateFirst && i === 0;
-    let pills = line.nums.map((n) => pillHTML(n, false, ph)).join("");
-    if (line.extra != null) {
-      pills += `<span class="extra-sep">${spec.extra.label}</span>` + pillHTML(line.extra, true, ph);
-    }
     row.innerHTML =
       `<span class="line-no">${i + 1}</span>` +
-      `<span class="pills">${pills}</span>` +
+      `<span class="pills">${pillsHTML(spec, line, ph)}</span>` +
       `<button type="button" class="copy-btn" aria-label="Copy line ${i + 1}">⧉</button>`;
     row.querySelector(".copy-btn").addEventListener("click", (e) =>
       copyText(lineText(spec, line), e.currentTarget)
     );
     els.resultsList.appendChild(row);
   });
+  if (spec.powerhitNote) {
+    const note = document.createElement("div");
+    note.className = "pb-note-row";
+    note.textContent = "All 20 Powerballs covered — PowerHit";
+    els.resultsList.appendChild(note);
+  }
   if (!animateFirst) return;
   els.resultsCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -522,12 +676,26 @@ function finalizeLineOne(spec, line) {
   // Rebuild line 1 sorted (balls were released in random order).
   const row = els.resultsList.querySelector('.line[data-idx="0"]');
   if (!row) return;
-  let pills = line.nums.map((n) => pillHTML(n)).join("");
-  if (line.extra != null) {
-    pills += `<span class="extra-sep">${spec.extra.label}</span>` + pillHTML(line.extra, true);
-  }
-  row.querySelector(".pills").innerHTML = pills;
+  row.querySelector(".pills").innerHTML = pillsHTML(spec, line, false);
 }
+
+/* tap-to-show stat bubble for Oracle pills (mobile has no hover) */
+let tipTimer = 0;
+const tipBubble = document.createElement("div");
+tipBubble.className = "tip-bubble";
+els.resultsCard.appendChild(tipBubble);
+els.resultsList.addEventListener("pointerdown", (e) => {
+  const pill = e.target.closest(".pill[data-tip]");
+  if (!pill) return;
+  const cardBox = els.resultsCard.getBoundingClientRect();
+  const box = pill.getBoundingClientRect();
+  tipBubble.textContent = pill.dataset.tip;
+  tipBubble.style.left = `${clamp(box.left + box.width / 2 - cardBox.left, 80, cardBox.width - 80)}px`;
+  tipBubble.style.top = `${box.top - cardBox.top - 6}px`;
+  tipBubble.classList.add("show");
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => tipBubble.classList.remove("show"), 2000);
+});
 
 els.copyAllBtn.addEventListener("click", (e) => {
   if (!lastDraw) return;
@@ -614,7 +782,7 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 /* ---------------------------------------------------------------- init */
 buildChips();
 syncQty();
-applyGameToUI();
+selectView(state.view);
 renderHistory();
 startLoop();
 if (reduceMotion.matches) { chamber.renderOnce(); pbChamber.renderOnce(); }
