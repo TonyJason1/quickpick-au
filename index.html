@@ -52,7 +52,21 @@
     <section class="card oracle-card" id="oracleCard" hidden>
       <p class="oracle-blurb">Secure random draw, gently tilted by era frequency and overdue streaks. Tap a revealed ball for its stats.</p>
       <p class="matrix-line oracle-status" id="oracleStatus">Loading draw history…</p>
-      <p class="matrix-line pb-note" id="pbNote" hidden>PowerHit play: 7 mains — <strong>all 20 Powerballs covered</strong>.</p>
+      <p class="matrix-line pb-note" id="pbNote" hidden>PowerHit-style play: mains only — <strong>all 20 Powerballs covered</strong>.</p>
+      <div class="oracle-ctls" id="oracleCtls">
+        <div class="qty-ctl">
+          <span class="qty-label">Numbers</span>
+          <button type="button" class="step-btn sm" data-oq="picks" data-dir="-1" aria-label="Fewer numbers">−</button>
+          <span class="qty-val" id="oPicksVal">7</span>
+          <button type="button" class="step-btn sm" data-oq="picks" data-dir="1" aria-label="More numbers">+</button>
+        </div>
+        <div class="qty-ctl">
+          <span class="qty-label">Lines</span>
+          <button type="button" class="step-btn sm" data-oq="lines" data-dir="-1" aria-label="Fewer lines">−</button>
+          <span class="qty-val" id="oLinesVal">1</span>
+          <button type="button" class="step-btn sm" data-oq="lines" data-dir="1" aria-label="More lines">+</button>
+        </div>
+      </div>
     </section>
 
     <!-- 2 + 3. Controls -->

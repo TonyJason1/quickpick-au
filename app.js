@@ -4,7 +4,7 @@
  * only; every combination has identical odds. */
 import { drawLine, shuffled } from "./rng.js";
 import {
-  ORACLE_GAMES, generateOracleLines, getOracleContext, tooltipText
+  ORACLE_GAMES, ORACLE_MAX_LINES, generateOracleLines, getOracleContext, tooltipText
 } from "./js/predictor.js";
 
 /* ---------------------------------------------------------------- games */
@@ -28,8 +28,18 @@ const state = {
   qty: 1,
   custom: { pool: 45, picks: 6, extraOn: false, extraPool: 20 },
   view: "pick",          // "pick" | "oracle"
+  // Oracle per-game quantity overrides; absent key = game default.
+  oracle: { picks: {}, lines: {} },
   animating: false
 };
+
+/** Oracle quantities for a game — stored override or the game default. */
+function oraclePicksFor(key) {
+  return state.oracle.picks[key] ?? ORACLE_GAMES[key].picks;
+}
+function oracleLinesFor(key) {
+  return state.oracle.lines[key] ?? ORACLE_GAMES[key].lines ?? 1;
+}
 
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
@@ -37,6 +47,19 @@ try {
     state.game = saved.game;
     state.qty = clamp(saved.qty | 0, 1, 50);
     if (saved.view === "oracle") state.view = "oracle";
+    if (saved.oracle) {
+      // clean migration: keep only integer overrides inside today's bounds
+      for (const [key, game] of Object.entries(ORACLE_GAMES)) {
+        const p = saved.oracle.picks?.[key];
+        if (Number.isInteger(p) && p >= game.minPicks && p <= game.maxPicks) {
+          state.oracle.picks[key] = p;
+        }
+        const l = saved.oracle.lines?.[key];
+        if (Number.isInteger(l) && l >= 1 && l <= ORACLE_MAX_LINES) {
+          state.oracle.lines[key] = l;
+        }
+      }
+    }
     if (saved.custom) {
       state.custom.pool = clamp(saved.custom.pool | 0, 2, 99);
       state.custom.picks = clamp(saved.custom.picks | 0, 1, Math.min(20, state.custom.pool - 1));
@@ -50,7 +73,7 @@ function savePrefs() {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify({
       game: state.game, qty: state.qty, custom: state.custom,
-      view: state.view
+      view: state.view, oracle: state.oracle
     }));
   } catch { /* storage full/blocked — non-fatal */ }
 }
@@ -84,7 +107,8 @@ const els = {
   copyAllBtn: $("copyAllBtn"), historyBox: $("historyBox"), historyList: $("historyList"),
   historyCount: $("historyCount"), clearHistoryBtn: $("clearHistoryBtn"), drawBtn: $("drawBtn"),
   tabPick: $("tabPick"), tabOracle: $("tabOracle"), oracleCard: $("oracleCard"),
-  pickControls: $("pickControls"),
+  pickControls: $("pickControls"), oracleCtls: $("oracleCtls"),
+  oPicksVal: $("oPicksVal"), oLinesVal: $("oLinesVal"),
   oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote")
 };
 
@@ -367,12 +391,57 @@ function selectView(view) {
   applyGameToUI();
 }
 
+/** Sync the Numbers/Lines steppers to the current game's values + bounds. */
+function syncOracleCtls() {
+  const game = ORACLE_GAMES[state.game];
+  if (!game) return;
+  const picks = oraclePicksFor(state.game);
+  const lines = oracleLinesFor(state.game);
+  els.oPicksVal.textContent = String(picks);
+  els.oLinesVal.textContent = String(lines);
+  for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
+    const dir = parseInt(btn.dataset.dir, 10);
+    btn.disabled = btn.dataset.oq === "picks"
+      ? (dir < 0 ? picks <= game.minPicks : picks >= game.maxPicks)
+      : (dir < 0 ? lines <= 1 : lines >= ORACLE_MAX_LINES);
+  }
+}
+
+function stepOracleQty(which, dir) {
+  const key = state.game;
+  const game = ORACLE_GAMES[key];
+  if (!game) return;
+  if (which === "picks") {
+    state.oracle.picks[key] = clamp(oraclePicksFor(key) + dir, game.minPicks, game.maxPicks);
+  } else {
+    state.oracle.lines[key] = clamp(oracleLinesFor(key) + dir, 1, ORACLE_MAX_LINES);
+  }
+  savePrefs();
+  syncOracleCtls();
+}
+
+// oracle steppers (same press-and-hold repeat as the pick-tab steppers)
+for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
+  const which = btn.dataset.oq;
+  const dir = parseInt(btn.dataset.dir, 10);
+  let holdT = 0, repT = 0;
+  const fire = () => { if (!state.animating) stepOracleQty(which, dir); };
+  btn.addEventListener("click", fire);
+  btn.addEventListener("pointerdown", () => {
+    holdT = setTimeout(() => { repT = setInterval(fire, 90); }, 450);
+  });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
+    btn.addEventListener(ev, () => { clearTimeout(holdT); clearInterval(repT); });
+  }
+}
+
 /** Preload the current game's era stats and surface them in the status line. */
 async function refreshOraclePanel() {
   const gameKey = state.game;
   const game = ORACLE_GAMES[gameKey];
   if (!game) return;
   els.pbNote.hidden = !game.powerhit;
+  syncOracleCtls();
   els.oracleStatus.textContent = "Consulting the archive…";
   try {
     const ctx = await getOracleContext(gameKey);
@@ -527,16 +596,17 @@ async function onOracleDraw() {
   }
 
   const g = GAMES[gameKey];
+  const picks = oraclePicksFor(gameKey);
   const spec = {
     name: `${g.name} — The Oracle`,
     color: g.color,
     pool: game.matrix.pool,
-    picks: game.picks,
+    picks,
     extra: null,
     oracle: { ctx },
     powerhitNote: !!game.powerhit
   };
-  const lines = generateOracleLines(ctx.stats, game)
+  const lines = generateOracleLines(ctx.stats, game, { picks, lines: oracleLinesFor(gameKey) })
     .map((nums) => ({ nums, extra: null }));
 
   pushHistory(spec, lines);

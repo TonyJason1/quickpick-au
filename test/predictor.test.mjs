@@ -13,8 +13,9 @@
  */
 
 import { readFileSync } from "node:fs";
+import { secureInt } from "../rng.js";
 import {
-  ORACLE_GAMES, MODES, matchesMatrix, detectEra, classifyBoundary,
+  ORACLE_GAMES, MODES, ORACLE_MAX_LINES, matchesMatrix, detectEra, classifyBoundary,
   poolCoverageViolations, sanityCheckEraStart, computeStats, oracleWeights,
   unifiedWeights, pickOracle, pickOracleUnified, pickLine, generateLines,
   generateOracleLines, tooltipText, getOracleContext, clearOracleCache
@@ -297,18 +298,25 @@ check("tooltip: both unified signals, doctrine wording", () => {
 
 /* --------------------------------------- 4. output contracts: game × mode */
 
+/* min = standard entry size; max = The Lott's largest System entry, verified
+ * against thelott.com product/help pages 2026-07-18. Set for Life offers NO
+ * System entries (QuickPick/marked only) — pinned at exactly 7. */
 const EXPECTED_SHAPE = {
-  tattslotto: { lines: 1, picks: 7 },
-  ozlotto: { lines: 1, picks: 8 },
-  powerball: { lines: 1, picks: 7 },
-  setforlife: { lines: 2, picks: 7 },
-  weekdaywindfall: { lines: 1, picks: 7 }
+  tattslotto: { lines: 1, picks: 7, min: 6, max: 20 },
+  ozlotto: { lines: 1, picks: 8, min: 7, max: 20 },
+  powerball: { lines: 1, picks: 7, min: 7, max: 20 },
+  setforlife: { lines: 2, picks: 7, min: 7, max: 7 },
+  weekdaywindfall: { lines: 1, picks: 7, min: 6, max: 20 }
 };
 
 for (const [key, game] of Object.entries(ORACLE_GAMES)) {
-  check(`config: ${key} play format matches the doctrine`, () => {
-    eq(game.lines ?? 1, EXPECTED_SHAPE[key].lines, "lines");
-    eq(game.picks, EXPECTED_SHAPE[key].picks, "picks");
+  check(`config: ${key} play format + verified stepper bounds`, () => {
+    eq(game.lines ?? 1, EXPECTED_SHAPE[key].lines, "default lines");
+    eq(game.picks, EXPECTED_SHAPE[key].picks, "default picks");
+    eq(game.minPicks, EXPECTED_SHAPE[key].min, "floor (standard entry)");
+    eq(game.maxPicks, EXPECTED_SHAPE[key].max, "cap (max System entry)");
+    ok(game.minPicks <= game.picks && game.picks <= game.maxPicks, "default inside bounds");
+    ok(game.maxPicks < game.matrix.pool, "cap below pool");
   });
 }
 
@@ -422,6 +430,43 @@ for (const [key, game] of Object.entries(ORACLE_GAMES)) {
   });
 }
 
+check("unified output: 20 random (game, picks, lines) combos honour the contract", () => {
+  const keys = Object.keys(ORACLE_GAMES);
+  const statsFor = new Map();
+  for (let i = 0; i < 20; i++) {
+    const key = keys[secureInt(keys.length)];
+    const game = ORACLE_GAMES[key];
+    if (!statsFor.has(key)) {
+      const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+      statsFor.set(key, computeStats(era.draws, game.matrix.pool));
+    }
+    const k = game.minPicks + secureInt(game.maxPicks - game.minPicks + 1);
+    const lineCount = 1 + secureInt(ORACLE_MAX_LINES);
+    const lines = generateOracleLines(statsFor.get(key), game, { picks: k, lines: lineCount });
+    eq(lines.length, lineCount, `${key} k=${k}: line count`);
+    for (const line of lines) {
+      eq(line.length, k, `${key} k=${k}: picks per line`);
+      ok(line.every((n) => Number.isInteger(n) && n >= 1 && n <= game.matrix.pool), `${key} k=${k}: range`);
+      eq(new Set(line).size, k, `${key} k=${k}: unique within line`);
+      for (let j = 1; j < line.length; j++) ok(line[j] > line[j - 1], "sorted ascending");
+    }
+  }
+});
+
+check("unified output: bounds are validated (bad callers throw)", () => {
+  const game = ORACLE_GAMES.tattslotto;
+  const era = detectEra(realData(game.file), game.matrix);
+  const stats = computeStats(era.draws, game.matrix.pool);
+  const throws = (fn) => { try { fn(); return false; } catch { return true; } };
+  ok(throws(() => generateOracleLines(stats, game, { picks: 5 })), "below floor");
+  ok(throws(() => generateOracleLines(stats, game, { picks: 21 })), "above cap");
+  ok(throws(() => generateOracleLines(stats, game, { lines: 0 })), "zero lines");
+  ok(throws(() => generateOracleLines(stats, game, { lines: ORACLE_MAX_LINES + 1 })), "too many lines");
+  ok(throws(() => generateOracleLines(stats, game, { picks: 7.5 })), "non-integer picks");
+  eq(generateOracleLines(stats, game, { picks: 20, lines: 10 }).length, 10, "cap+max lines is legal");
+  ok(throws(() => generateOracleLines(stats, ORACLE_GAMES.setforlife, { picks: 8 })), "sfl above its pinned 7 (no System entries exist)");
+});
+
 check("unified: set for life lines are independent (overlap occurs, like real QuickPicks)", () => {
   const game = ORACLE_GAMES.setforlife;
   const era = detectEra(realData(game.file), game.matrix);
@@ -446,39 +491,47 @@ function choose(n, k) {
   return Math.round(r);
 }
 
-/* Doctrine pins for P(line contains ≥1 consecutive pair) under a uniform
- * draw: 1 − C(n−k+1,k)/C(n,k). A drifted pin means the pick counts changed;
- * an observed fraction off by more than ±1 percentage point means the
- * sampler has an adjacency bias bug. The unified weighting (ratio ≤ 1.5,
- * spatially noise-like across ball values) shifts the true fraction ≲0.4pp,
- * and binomial noise at 100k is ~0.15pp — so ±1pp never flakes but catches
- * any structural bias (e.g. a sort/dedup bug suppressing neighbours). */
+/* Doctrine pins (default k) for P(line contains ≥1 consecutive pair) under
+ * a uniform draw: 1 − C(n−k+1,k)/C(n,k). A drifted pin means the default
+ * pick counts changed; an observed fraction off by more than ±1 percentage
+ * point means the sampler has an adjacency bias bug. The unified weighting
+ * (ratio ≤ 1.5, spatially noise-like across ball values) shifts the true
+ * fraction ≲0.4pp, and binomial noise at 100k is ~0.15pp — so ±1pp never
+ * flakes but catches any structural bias (e.g. a sort/dedup bug suppressing
+ * neighbours). Parametrised over k = floor, default, and cap per game
+ * (Powerball k=20 of 35 makes an adjacent pair a pigeonhole certainty —
+ * closed form exactly 1, and the sampler must agree). */
 const ADJACENCY_DOCTRINE = {
   tattslotto: 0.661, ozlotto: 0.755, powerball: 0.768,
   setforlife: 0.671, weekdaywindfall: 0.661
 };
 
 for (const [key, game] of Object.entries(ORACLE_GAMES)) {
-  check(`adjacency: ${key} — 100k unified draws within ±1pp of closed form`, () => {
-    const n = game.matrix.pool, k = game.picks;
-    const closedForm = 1 - choose(n - k + 1, k) / choose(n, k);
-    ok(Math.abs(closedForm - ADJACENCY_DOCTRINE[key]) < 0.0006,
-      `closed form ${closedForm.toFixed(5)} drifted from doctrine pin ${ADJACENCY_DOCTRINE[key]} — did the pick counts change?`);
-    const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
-    const stats = computeStats(era.draws, game.matrix.pool);
-    const N = 100_000;
-    let withAdjacent = 0;
-    for (let i = 0; i < N; i++) {
-      const line = pickOracleUnified(stats, k); // sorted ascending
-      for (let j = 1; j < line.length; j++) {
-        if (line[j] - line[j - 1] === 1) { withAdjacent++; break; }
+  const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+  const stats = computeStats(era.draws, game.matrix.pool);
+  for (const k of [...new Set([game.minPicks, game.picks, game.maxPicks])]) {
+    const label = k === game.picks ? "default" : k === game.minPicks ? "floor" : "cap";
+    check(`adjacency: ${key} k=${k} (${label}) — 100k unified draws within ±1pp of closed form`, () => {
+      const n = game.matrix.pool;
+      const closedForm = 1 - choose(n - k + 1, k) / choose(n, k);
+      if (k === game.picks) {
+        ok(Math.abs(closedForm - ADJACENCY_DOCTRINE[key]) < 0.0006,
+          `closed form ${closedForm.toFixed(5)} drifted from doctrine pin ${ADJACENCY_DOCTRINE[key]} — did the default pick counts change?`);
       }
-    }
-    const fraction = withAdjacent / N;
-    ok(Math.abs(fraction - closedForm) <= 0.01,
-      `adjacency fraction ${fraction.toFixed(4)} vs closed form ${closedForm.toFixed(4)} ` +
-      `(|Δ| ${Math.abs(fraction - closedForm).toFixed(4)} > 0.01) — adjacency bias bug`);
-  });
+      const N = 100_000;
+      let withAdjacent = 0;
+      for (let i = 0; i < N; i++) {
+        const line = pickOracleUnified(stats, k); // sorted ascending
+        for (let j = 1; j < line.length; j++) {
+          if (line[j] - line[j - 1] === 1) { withAdjacent++; break; }
+        }
+      }
+      const fraction = withAdjacent / N;
+      ok(Math.abs(fraction - closedForm) <= 0.01,
+        `adjacency fraction ${fraction.toFixed(4)} vs closed form ${closedForm.toFixed(4)} ` +
+        `(|Δ| ${Math.abs(fraction - closedForm).toFixed(4)} > 0.01) — adjacency bias bug`);
+    });
+  }
 }
 
 /* ----------------------------------- 6. legacy oracle weighting (exported) */

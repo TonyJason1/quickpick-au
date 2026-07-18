@@ -29,33 +29,39 @@ import { secureInt, shuffled } from "../rng.js";
 
 /* ------------------------------------------------------------ game config */
 
-/** Current matrices + Tony's play formats (picks per line, lines per play). */
+/** Current matrices + Tony's play formats. `picks` is the DEFAULT mains per
+ * line; the Numbers stepper ranges [minPicks, maxPicks] where minPicks = the
+ * standard entry size and maxPicks = The Lott's largest System entry —
+ * verified against thelott.com 2026-07-18: TattsLotto/Weekday Windfall
+ * System 7–20, Oz Lotto System 8–20, Powerball System 8–20 mains; Set for
+ * Life offers NO System entries (QuickPick/marked only), so it is pinned
+ * at 7. `lines` is the default line count (stepper 1–ORACLE_MAX_LINES). */
 export const ORACLE_GAMES = {
   tattslotto: {
     name: "TattsLotto", file: "tattslotto",
     matrix: { pool: 45, drawn: 6, supps: 2, pb: null },
-    picks: 7, lines: 1
+    picks: 7, minPicks: 6, maxPicks: 20, lines: 1
   },
   ozlotto: {
     name: "Oz Lotto", file: "ozlotto",
     matrix: { pool: 47, drawn: 7, supps: 3, pb: null },
-    picks: 8, lines: 1
+    picks: 8, minPicks: 7, maxPicks: 20, lines: 1
   },
   powerball: {
     name: "Powerball", file: "powerball",
     matrix: { pool: 35, drawn: 7, supps: 0, pb: 20 },
-    // PowerHit play: pick 7 mains only — every one of the 20 Powerballs is covered.
-    picks: 7, lines: 1, powerhit: true
+    // PowerHit play: mains only at any count — all 20 Powerballs covered.
+    picks: 7, minPicks: 7, maxPicks: 20, lines: 1, powerhit: true
   },
   setforlife: {
     name: "Set for Life", file: "setforlife",
     matrix: { pool: 44, drawn: 7, supps: 2, pb: null },
-    picks: 7, lines: 2
+    picks: 7, minPicks: 7, maxPicks: 7, lines: 2
   },
   weekdaywindfall: {
     name: "Weekday Windfall", file: "weekdaywindfall",
     matrix: { pool: 45, drawn: 6, supps: 2, pb: null },
-    picks: 7, lines: 1, hasLegacy: true,
+    picks: 7, minPicks: 6, maxPicks: 20, lines: 1, hasLegacy: true,
     /* Mon & Wed Lotto ran a 6/44 pool until the May 2004 national alignment.
      * 6/44 draws pass every 6/45 bounds check (44 ⊂ 45, same counts), so
      * matrix matching alone cannot see the boundary — but ball 45 never
@@ -67,6 +73,7 @@ export const ORACLE_GAMES = {
 };
 
 export const MODES = ["hot", "cold", "overdue", "oracle"];
+export const ORACLE_MAX_LINES = 10;
 
 /* Approximate known matrix-change dates — sanity anchors for the era
  * auto-detection, NOT cutoffs. Detection is always data-driven; a detected
@@ -320,14 +327,22 @@ export function pickLine(stats, mode, k) {
 }
 
 /**
- * THE shipped generator: one unified weighted draw per line. Set for Life
- * plays two INDEPENDENT draws (overlap between lines allowed, exactly like
- * two real QuickPicks; never within one line).
+ * THE shipped generator: `lines` INDEPENDENT unified weighted draws of
+ * `picks` balls each (overlap between lines allowed, exactly like real
+ * QuickPicks; never within one line). Defaults come from the game config
+ * (Set for Life: 2 lines). Bounds are validated here so a bad caller can
+ * never mint an entry The Lott wouldn't sell.
  */
-export function generateOracleLines(stats, game) {
-  const k = game.picks;
-  if (game.lines === 2) return [pickOracleUnified(stats, k), pickOracleUnified(stats, k)];
-  return [pickOracleUnified(stats, k)];
+export function generateOracleLines(stats, game, { picks, lines } = {}) {
+  const k = picks ?? game.picks;
+  const count = lines ?? game.lines ?? 1;
+  if (!Number.isInteger(k) || k < game.minPicks || k > game.maxPicks) {
+    throw new RangeError(`generateOracleLines: picks ${k} outside [${game.minPicks}, ${game.maxPicks}] for ${game.name}`);
+  }
+  if (!Number.isInteger(count) || count < 1 || count > ORACLE_MAX_LINES) {
+    throw new RangeError(`generateOracleLines: lines ${count} outside [1, ${ORACLE_MAX_LINES}]`);
+  }
+  return Array.from({ length: count }, () => pickOracleUnified(stats, k));
 }
 
 /**
