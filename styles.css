@@ -182,28 +182,8 @@ input[type="range"] {
 .matrix-line { margin: 12px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 
 /* ---------- The Oracle ---------- */
-.mode-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-.mode-btn {
-  min-height: 44px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--navy-2);
-  color: var(--muted);
-  font: 800 12px/1 inherit;
-  font-family: inherit;
-  letter-spacing: .08em;
-  cursor: pointer;
-  touch-action: manipulation;
-  transition: background-color .2s, color .2s;
-}
-.mode-btn[aria-checked="true"] {
-  background: var(--accent);
-  border-color: transparent;
-  color: #fff;
-  text-shadow: 0 1px 2px rgba(0,0,0,.35);
-}
-.mode-desc { margin: 10px 0 0; font-size: 13px; text-align: center; min-height: 1.4em; }
-.oracle-status { margin-top: 6px; }
+.oracle-blurb { margin: 0; font-size: 13px; text-align: center; }
+.oracle-status { margin-top: 8px; }
 .pb-note { margin-top: 8px; color: var(--extra); }
 .pb-note strong { color: var(--extra); }
 .pb-note-row {

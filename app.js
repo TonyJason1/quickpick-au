@@ -4,7 +4,7 @@
  * only; every combination has identical odds. */
 import { drawLine, shuffled } from "./rng.js";
 import {
-  ORACLE_GAMES, MODES, generateLines, getOracleContext, tooltipText
+  ORACLE_GAMES, generateOracleLines, getOracleContext, tooltipText
 } from "./js/predictor.js";
 
 /* ---------------------------------------------------------------- games */
@@ -28,7 +28,6 @@ const state = {
   qty: 1,
   custom: { pool: 45, picks: 6, extraOn: false, extraPool: 20 },
   view: "pick",          // "pick" | "oracle"
-  mode: "oracle",        // Oracle mode: hot | cold | overdue | oracle
   animating: false
 };
 
@@ -38,7 +37,6 @@ try {
     state.game = saved.game;
     state.qty = clamp(saved.qty | 0, 1, 50);
     if (saved.view === "oracle") state.view = "oracle";
-    if (MODES.includes(saved.mode)) state.mode = saved.mode;
     if (saved.custom) {
       state.custom.pool = clamp(saved.custom.pool | 0, 2, 99);
       state.custom.picks = clamp(saved.custom.picks | 0, 1, Math.min(20, state.custom.pool - 1));
@@ -52,7 +50,7 @@ function savePrefs() {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify({
       game: state.game, qty: state.qty, custom: state.custom,
-      view: state.view, mode: state.mode
+      view: state.view
     }));
   } catch { /* storage full/blocked — non-fatal */ }
 }
@@ -86,7 +84,7 @@ const els = {
   copyAllBtn: $("copyAllBtn"), historyBox: $("historyBox"), historyList: $("historyList"),
   historyCount: $("historyCount"), clearHistoryBtn: $("clearHistoryBtn"), drawBtn: $("drawBtn"),
   tabPick: $("tabPick"), tabOracle: $("tabOracle"), oracleCard: $("oracleCard"),
-  pickControls: $("pickControls"), modeSeg: $("modeSeg"), modeDesc: $("modeDesc"),
+  pickControls: $("pickControls"),
   oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote")
 };
 
@@ -351,13 +349,6 @@ function applyGameToUI() {
 }
 
 /* --------------------------------------------------------- The Oracle */
-const MODE_META = {
-  hot:     { label: "HOT",     desc: "The most-drawn numbers of the current era." },
-  cold:    { label: "COLD",    desc: "The least-drawn numbers of the current era." },
-  overdue: { label: "OVERDUE", desc: "Longest time since last drawn." },
-  oracle:  { label: "ORACLE",  desc: "Secure random draw, gently tilted toward era-hot numbers." }
-};
-
 function selectView(view) {
   state.view = view;
   savePrefs();
@@ -373,15 +364,7 @@ function selectView(view) {
   for (const chip of els.chips.children) {
     if (chip.dataset.key === "custom") chip.hidden = oracle;
   }
-  syncModeSeg();
   applyGameToUI();
-}
-
-function syncModeSeg() {
-  for (const btn of els.modeSeg.querySelectorAll(".mode-btn")) {
-    btn.setAttribute("aria-checked", String(btn.dataset.mode === state.mode));
-  }
-  els.modeDesc.textContent = MODE_META[state.mode].desc;
 }
 
 /** Preload the current game's era stats and surface them in the status line. */
@@ -410,13 +393,6 @@ async function refreshOraclePanel() {
 
 els.tabPick.addEventListener("click", () => { if (!state.animating) selectView("pick"); });
 els.tabOracle.addEventListener("click", () => { if (!state.animating) selectView("oracle"); });
-els.modeSeg.addEventListener("click", (e) => {
-  const btn = e.target.closest(".mode-btn");
-  if (!btn || state.animating) return;
-  state.mode = btn.dataset.mode;
-  savePrefs();
-  syncModeSeg();
-});
 
 /* ----------------------------------------------------------- controls */
 function syncQty() {
@@ -552,7 +528,7 @@ async function onOracleDraw() {
 
   const g = GAMES[gameKey];
   const spec = {
-    name: `${g.name} — ${MODE_META[state.mode].label}`,
+    name: `${g.name} — The Oracle`,
     color: g.color,
     pool: game.matrix.pool,
     picks: game.picks,
@@ -560,7 +536,7 @@ async function onOracleDraw() {
     oracle: { ctx },
     powerhitNote: !!game.powerhit
   };
-  const lines = generateLines(ctx.stats, game, state.mode)
+  const lines = generateOracleLines(ctx.stats, game)
     .map((nums) => ({ nums, extra: null }));
 
   pushHistory(spec, lines);
@@ -615,7 +591,7 @@ function pillHTML(n, extra = false, placeholder = false, tip = null) {
 /** Pills for one line; Oracle draws carry per-ball era-stat tooltips. */
 function pillsHTML(spec, line, placeholder) {
   const tipFor = spec.oracle
-    ? (n) => tooltipText(spec.oracle.ctx.stats, spec.oracle.ctx.era, n)
+    ? (n) => tooltipText(spec.oracle.ctx.stats, n)
     : () => null;
   let pills = line.nums.map((n) => pillHTML(n, false, placeholder, tipFor(n))).join("");
   if (line.extra != null) {

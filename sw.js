@@ -3,7 +3,7 @@
  * Exception: data/draws/*.json is stale-while-revalidate — the weekly data
  * commit must reach clients WITHOUT a version bump (cached copy answers
  * instantly/offline, a background refetch updates the cache for next time). */
-const VERSION = "v1.1.1";
+const VERSION = "v1.2.0";
 const CACHE = `quickpick-au-${VERSION}`;
 
 const ASSETS = [

@@ -1,8 +1,11 @@
 /* QuickPick AU — "The Oracle" predictor core.
  *
- * Era-filtered draw statistics + four pick modes (HOT / COLD / OVERDUE /
- * ORACLE) for the five supported games. Pure ES module — runs in the browser
- * and under Node (tests, scripts/update-draws.mjs) with no DOM dependency.
+ * Era-filtered draw statistics + the UNIFIED weighted draw for the five
+ * supported games: weight = 1 + 0.35·normFreq + 0.15·normGap, sampled with
+ * crypto rejection sampling. Legacy HOT/COLD/OVERDUE/ORACLE pickers remain
+ * exported (tests / possible future advanced toggle) but have no UI entry.
+ * Pure ES module — runs in the browser and under Node (tests,
+ * scripts/update-draws.mjs) with no DOM dependency.
  *
  * Selection entropy is ALWAYS rng.js (crypto.getRandomValues, rejection
  * sampling). Historical stats only shape rankings/weights — they cannot make
@@ -208,13 +211,15 @@ export function computeStats(eraDraws, pool, { countSupps = false } = {}) {
   });
   const total = eraDraws.length;
   const gap = new Array(pool + 1).fill(0);
-  let minFreq = Infinity, maxFreq = -Infinity;
+  let minFreq = Infinity, maxFreq = -Infinity, minGap = Infinity, maxGap = -Infinity;
   for (let n = 1; n <= pool; n++) {
     gap[n] = total - 1 - lastIdx[n];
     if (freq[n] < minFreq) minFreq = freq[n];
     if (freq[n] > maxFreq) maxFreq = freq[n];
+    if (gap[n] < minGap) minGap = gap[n];
+    if (gap[n] > maxGap) maxGap = gap[n];
   }
-  return { pool, total, freq, gap, minFreq, maxFreq };
+  return { pool, total, freq, gap, minFreq, maxFreq, minGap, maxGap };
 }
 
 /* ------------------------------------------------------------ pick modes */
@@ -232,12 +237,32 @@ function rankedBalls(stats, metric, desc) {
   return balls;
 }
 
-/** ORACLE weights: 1 + 0.5 × min-max-normalised era frequency ∈ [1, 1.5]. */
+/** Legacy ORACLE weights: 1 + 0.5 × min-max-normalised era frequency ∈ [1, 1.5]. */
 export function oracleWeights(stats) {
   const span = stats.maxFreq - stats.minFreq;
   const w = new Array(stats.pool + 1).fill(0);
   for (let n = 1; n <= stats.pool; n++) {
     w[n] = 1 + 0.5 * (span === 0 ? 0 : (stats.freq[n] - stats.minFreq) / span);
+  }
+  return w;
+}
+
+/**
+ * UNIFIED Oracle weights (the shipped default):
+ *   weight = 1 + 0.35 × normFreq + 0.15 × normGap
+ * normFreq = min-max normalised era frequency (mains only), normGap =
+ * min-max normalised current absence streak — both signals feed one draw.
+ * Structural bounds: every weight ∈ [1, 1.5], so the max/min ratio never
+ * exceeds 1.5 and no ball can be starved, let alone excluded.
+ */
+export function unifiedWeights(stats) {
+  const fSpan = stats.maxFreq - stats.minFreq;
+  const gSpan = stats.maxGap - stats.minGap;
+  const w = new Array(stats.pool + 1).fill(0);
+  for (let n = 1; n <= stats.pool; n++) {
+    const normFreq = fSpan === 0 ? 0 : (stats.freq[n] - stats.minFreq) / fSpan;
+    const normGap = gSpan === 0 ? 0 : (stats.gap[n] - stats.minGap) / gSpan;
+    w[n] = 1 + 0.35 * normFreq + 0.15 * normGap;
   }
   return w;
 }
@@ -251,21 +276,30 @@ export function oracleWeights(stats) {
  */
 const ACCEPT_SCALE = 1 << 20;
 
-export function pickOracle(stats, k) {
-  if (k > stats.pool) throw new RangeError(`pickOracle: k ${k} > pool ${stats.pool}`);
-  const w = oracleWeights(stats);
+function pickWeighted(stats, k, w, label) {
+  if (k > stats.pool) throw new RangeError(`${label}: k ${k} > pool ${stats.pool}`);
   let wMax = 0;
   for (let n = 1; n <= stats.pool; n++) if (w[n] > wMax) wMax = w[n];
   const picked = new Set();
   let guard = 0;
   while (picked.size < k) {
-    if (++guard > 1_000_000) throw new Error("pickOracle: rejection sampling did not converge");
+    if (++guard > 1_000_000) throw new Error(`${label}: rejection sampling did not converge`);
     const n = 1 + secureInt(stats.pool);
     if (picked.has(n)) continue;
     const threshold = Math.round((w[n] / wMax) * ACCEPT_SCALE);
     if (secureInt(ACCEPT_SCALE) < threshold) picked.add(n);
   }
   return [...picked].sort(asc);
+}
+
+/** Legacy frequency-only weighted draw (kept for tests/advanced use). */
+export function pickOracle(stats, k) {
+  return pickWeighted(stats, k, oracleWeights(stats), "pickOracle");
+}
+
+/** The unified Oracle draw — frequency + overdue signals in one sample. */
+export function pickOracleUnified(stats, k) {
+  return pickWeighted(stats, k, unifiedWeights(stats), "pickOracleUnified");
 }
 
 /** Metric array + direction for the three ranking modes. */
@@ -286,10 +320,22 @@ export function pickLine(stats, mode, k) {
 }
 
 /**
- * All lines for a game/mode. Single-line games return [line].
- * Set for Life rank modes return two DISJOINT lines — ranks 1–7 and 8–14 of
- * one ranking; ORACLE returns two independent weighted draws (may overlap
- * between lines, never within one).
+ * THE shipped generator: one unified weighted draw per line. Set for Life
+ * plays two INDEPENDENT draws (overlap between lines allowed, exactly like
+ * two real QuickPicks; never within one line).
+ */
+export function generateOracleLines(stats, game) {
+  const k = game.picks;
+  if (game.lines === 2) return [pickOracleUnified(stats, k), pickOracleUnified(stats, k)];
+  return [pickOracleUnified(stats, k)];
+}
+
+/**
+ * Legacy mode-based lines — no UI entry since the unified refactor; kept
+ * exported for tests and a possible future advanced toggle.
+ * Single-line games return [line]. Set for Life rank modes return two
+ * DISJOINT lines (ranks 1–7 and 8–14 of one ranking); "oracle" returns two
+ * independent weighted draws.
  */
 export function generateLines(stats, game, mode) {
   if (!MODES.includes(mode)) throw new Error(`generateLines: unknown mode "${mode}"`);
@@ -304,9 +350,11 @@ export function generateLines(stats, game, mode) {
   return [pickLine(stats, mode, k)];
 }
 
-/** Tooltip line for ball n — exact doctrine wording. */
-export function tooltipText(stats, era, n) {
-  return `drawn ${stats.freq[n]}× in ${stats.total} draws since ${era.startYear}`;
+/** Tooltip line for ball n — both signals feeding the unified pick. */
+export function tooltipText(stats, n) {
+  const drawn = `drawn ${stats.freq[n]}×`;
+  if (stats.freq[n] === 0) return `${drawn} · not yet seen this era`;
+  return `${drawn} · last seen ${stats.gap[n]} draws ago`;
 }
 
 /* ------------------------------------------------------------ data loader */

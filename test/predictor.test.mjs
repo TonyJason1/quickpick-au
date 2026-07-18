@@ -16,8 +16,8 @@ import { readFileSync } from "node:fs";
 import {
   ORACLE_GAMES, MODES, matchesMatrix, detectEra, classifyBoundary,
   poolCoverageViolations, sanityCheckEraStart, computeStats, oracleWeights,
-  pickOracle, pickLine, generateLines, tooltipText, getOracleContext,
-  clearOracleCache
+  unifiedWeights, pickOracle, pickOracleUnified, pickLine, generateLines,
+  generateOracleLines, tooltipText, getOracleContext, clearOracleCache
 } from "../js/predictor.js";
 
 let pass = 0, fail = 0;
@@ -288,10 +288,11 @@ check("modes: ties are broken randomly (crypto shuffle before stable sort)", () 
   ok(seen.size > 1, "40 runs never varied the tie-break — RNG tie-breaking broken");
 });
 
-check("tooltip: doctrine wording", () => {
+check("tooltip: both unified signals, doctrine wording", () => {
   const s = computeStats(TINY, 10);
-  const era = { startYear: 2026 };
-  eq(tooltipText(s, era, 1), "drawn 5× in 5 draws since 2026", "tooltip");
+  eq(tooltipText(s, 1), "drawn 5× · last seen 0 draws ago", "hot ball");
+  eq(tooltipText(s, 3), "drawn 1× · last seen 4 draws ago", "stale ball");
+  eq(tooltipText(s, 9), "drawn 0× · not yet seen this era", "never-seen ball");
 });
 
 /* --------------------------------------- 4. output contracts: game × mode */
@@ -333,7 +334,109 @@ for (const [key, game] of Object.entries(ORACLE_GAMES)) {
   }
 }
 
-/* --------------------------------------------------- 5. oracle weighting */
+/* --------------------------------------------- 5. unified oracle (shipped) */
+
+check("unified: exact weight formula (1 + 0.35·normFreq + 0.15·normGap)", () => {
+  const s = computeStats(TINY, 10);
+  // freq [5,4,1,1,1,1,1,1,0,0] span 5; gap [0,0,4,3,2,2,1,0,5,5] span 5
+  const w = unifiedWeights(s);
+  eq(w[1], 1.35, "hottest + just seen: 1 + 0.35·1 + 0.15·0");
+  eq(w[2], 1 + 0.35 * (4 / 5), "ball 2");
+  eq(w[3], 1 + 0.35 * (1 / 5) + 0.15 * (4 / 5), "ball 3 mixes both signals");
+  eq(w[8], 1 + 0.35 * (1 / 5), "ball 8: min gap contributes 0");
+  eq(w[9], 1.15, "never drawn + most overdue: 1 + 0 + 0.15·1");
+  const flat = computeStats([{ draw: 1, date: "2026-01-01", numbers: [1, 2], supps: [], pb: null }], 2);
+  eq(unifiedWeights(flat).slice(1), [1, 1], "zero spans → all weights 1");
+});
+
+check("unified: effective max/min weight ratio ≤ ~1.5 (TINY + every real game)", () => {
+  const ratioOf = (s) => {
+    const w = unifiedWeights(s).slice(1);
+    return Math.max(...w) / Math.min(...w);
+  };
+  ok(ratioOf(computeStats(TINY, 10)) <= 1.5 + 1e-9, "TINY ratio");
+  for (const [key, game] of Object.entries(ORACLE_GAMES)) {
+    const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+    const r = ratioOf(computeStats(era.draws, game.matrix.pool));
+    ok(r <= 1.5 + 1e-9 && r >= 1, `${key} ratio ${r.toFixed(4)} outside [1, 1.5]`);
+  }
+});
+
+/* Upper-tail chi-square critical value, Wilson–Hilferty (as in rng.test).
+ * α = 0.001 so the weekly Action doesn't flake; with 100k samples a real
+ * weighting bug lands orders of magnitude past any critical value. */
+function chiCrit999(df) {
+  const z = 3.0902323061678132; // Phi^-1(0.999)
+  const a = 2 / (9 * df);
+  return df * Math.pow(1 - a + z * Math.sqrt(a), 3);
+}
+
+function chiSquareUnified(stats, samples) {
+  const w = unifiedWeights(stats);
+  let wSum = 0;
+  for (let n = 1; n <= stats.pool; n++) wSum += w[n];
+  const counts = new Array(stats.pool + 1).fill(0);
+  for (let i = 0; i < samples; i++) counts[pickOracleUnified(stats, 1)[0]]++;
+  let chi2 = 0;
+  for (let n = 1; n <= stats.pool; n++) {
+    const expected = (samples * w[n]) / wSum;
+    const d = counts[n] - expected;
+    chi2 += (d * d) / expected;
+  }
+  return { chi2, counts, df: stats.pool - 1 };
+}
+
+check("unified: chi-square over 100k samples matches the weights (pool 10)", () => {
+  const { chi2, counts, df } = chiSquareUnified(computeStats(TINY, 10), 100_000);
+  const crit = chiCrit999(df);
+  ok(chi2 < crit, `chi² ${chi2.toFixed(2)} ≥ crit999 ${crit.toFixed(2)} (df ${df})`);
+  ok(counts.slice(1).every((c) => c > 0), "no ball excluded across 100k samples");
+});
+
+check("unified: chi-square over 100k samples on real TattsLotto stats (pool 45)", () => {
+  const game = ORACLE_GAMES.tattslotto;
+  const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+  const { chi2, counts, df } = chiSquareUnified(computeStats(era.draws, 45), 100_000);
+  const crit = chiCrit999(df);
+  ok(chi2 < crit, `chi² ${chi2.toFixed(2)} ≥ crit999 ${crit.toFixed(2)} (df ${df})`);
+  ok(counts.slice(1).every((c) => c > 0), "no ball excluded across 100k samples");
+});
+
+check("unified: full-pool draw returns every ball — nothing is excludable", () => {
+  const s = computeStats(TINY, 10);
+  eq(pickOracleUnified(s, 10), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "k = pool");
+});
+
+for (const [key, game] of Object.entries(ORACLE_GAMES)) {
+  check(`unified output: ${key} contract`, () => {
+    const era = detectEra(realData(game.file), game.matrix, { eraFloor: game.eraFloor });
+    const stats = computeStats(era.draws, game.matrix.pool);
+    const lines = generateOracleLines(stats, game);
+    eq(lines.length, EXPECTED_SHAPE[key].lines, "line count");
+    for (const line of lines) {
+      eq(line.length, EXPECTED_SHAPE[key].picks, "picks per line");
+      ok(line.every((n) => Number.isInteger(n) && n >= 1 && n <= game.matrix.pool), `out of range: ${line}`);
+      eq(new Set(line).size, line.length, "unique within line");
+      for (let i = 1; i < line.length; i++) ok(line[i] > line[i - 1], "sorted ascending");
+    }
+  });
+}
+
+check("unified: set for life lines are independent (overlap occurs, like real QuickPicks)", () => {
+  const game = ORACLE_GAMES.setforlife;
+  const era = detectEra(realData(game.file), game.matrix);
+  const stats = computeStats(era.draws, game.matrix.pool);
+  let overlapped = 0;
+  for (let i = 0; i < 30; i++) {
+    const [a, b] = generateOracleLines(stats, game);
+    const setA = new Set(a);
+    if (b.some((n) => setA.has(n))) overlapped++;
+  }
+  // P(two independent 7-of-44 lines disjoint) ≈ 0.30 → P(0 overlaps in 30) ≈ 2e-16
+  ok(overlapped > 0, "30 independent pairs never overlapped — draws look forced-disjoint");
+});
+
+/* ----------------------------------- 6. legacy oracle weighting (exported) */
 
 check("oracle: exact weight formula (1 + 0.5 × min-max normalised freq)", () => {
   const s = computeStats(TINY, 10);
@@ -365,7 +468,7 @@ check("oracle: full-pool draw returns every ball exactly once", () => {
   eq(pickOracle(s, 10), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "k = pool");
 });
 
-/* ------------------------------------------------------- 6. data loader */
+/* ------------------------------------------------------- 7. data loader */
 
 const fakeFetcher = (payload, okStatus = true) => async () => ({
   ok: okStatus, status: okStatus ? 200 : 404, json: async () => payload

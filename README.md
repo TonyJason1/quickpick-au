@@ -19,16 +19,13 @@ Matrices verified against thelott.com how-to-play pages, July 2026.
 
 ## The Oracle
 
-Second tab: era-aware "predictor" over the real draw history. **For entertainment only — every combination has identical odds** (the fixed footer says exactly that). Four modes:
+Second tab: era-aware "predictor" over the real draw history. **For entertainment only — every combination has identical odds** (the fixed footer says exactly that). One unified flow — ASK THE ORACLE → ball-machine reveal:
 
-| Mode | Pick rule |
-|---|---|
-| HOT | top-K era frequency (ties broken by crypto RNG) |
-| COLD | bottom-K era frequency (ties random) |
-| OVERDUE | longest current absence streak (ties random) |
-| ORACLE | weighted crypto sample, weight = 1 + 0.5 × min-max-normalised era frequency, rejection sampling |
+> **weight(ball) = 1 + 0.35 × normFreq + 0.15 × normGap**
 
-Play formats: TattsLotto 7, Oz Lotto 8, Powerball 7 mains (PowerHit — all 20 Powerballs covered, PB barrel hidden), Set for Life 2×7 (rank modes give two disjoint lines, ORACLE two independent draws), Weekday Windfall 7. Tap a ball for its stat ("drawn N× in M draws since year"). Stats count main numbers only.
+normFreq = min-max-normalised era frequency (mains only), normGap = min-max-normalised current absence streak; drawn with the crypto rejection sampler, unique, sorted ascending. Every weight sits in [1, 1.5], so no ball is ever excluded and the max/min tilt ratio never exceeds 1.5 (chi-square-verified against the weights over 100k samples in tests). Legacy HOT/COLD/OVERDUE/ORACLE pickers remain exported from `js/predictor.js` for tests and a possible future advanced toggle — no UI entry.
+
+Play formats: TattsLotto 7, Oz Lotto 8, Powerball 7 mains (PowerHit — all 20 Powerballs covered, PB barrel hidden), Set for Life 2×7 independent draws (overlap between lines allowed, like two real QuickPicks), Weekday Windfall 7. Tap a ball for its stats ("drawn N× · last seen G draws ago" — both signals feeding the pick). Stats count main numbers only.
 
 **Era filter:** stats only ever use the current-matrix era, auto-detected per game by walking back from the latest draw until the record shape stops matching (Powerball 6→7 mains 2018-04-19, Oz Lotto +1 supp 2022-05-17, Set for Life 7/44 product start 2020-03-23). Weekday Windfall includes legacy Mon & Wed Lotto draws (`legacy: true` in the data, `includeLegacy` option) **floored at draw #2303 (2004-05-12)**: before the May 2004 national alignment Mon & Wed Lotto ran a 6/44 pool, which passes every 6/45 shape check but never draws ball 45 (665 such draws in the data, P ≈ 10⁻⁵³ under 6/45) — the audit's pool-coverage scan guards this class of contamination permanently. The UI distinguishes a real format boundary from mere API history depth: TattsLotto's 6/45 matrix predates the published data (1997), so its status line reads "since 1997-02-01 **(available history)**" rather than implying a boundary.
 
