@@ -52,7 +52,14 @@ export const ORACLE_GAMES = {
   weekdaywindfall: {
     name: "Weekday Windfall", file: "weekdaywindfall",
     matrix: { pool: 45, drawn: 6, supps: 2, pb: null },
-    picks: 7, lines: 1, hasLegacy: true
+    picks: 7, lines: 1, hasLegacy: true,
+    /* Mon & Wed Lotto ran a 6/44 pool until the May 2004 national alignment.
+     * 6/44 draws pass every 6/45 bounds check (44 ⊂ 45, same counts), so
+     * matrix matching alone cannot see the boundary — but ball 45 never
+     * appears in the 665 draws before #2303 (P ≈ 10^-53 under 6/45).
+     * The era is therefore floored at the first ball-45-evidenced draw;
+     * at most a draw or two of genuine 6/45 history is discarded. */
+    eraFloor: { draw: 2303, date: "2004-05-12", reason: "Mon & Wed Lotto 6/44 → 6/45 pool alignment" }
   }
 };
 
@@ -63,7 +70,7 @@ export const MODES = ["hot", "cold", "overdue", "oracle"];
  * boundary further than ERA_TOLERANCE_DAYS from its anchor logs a warning. */
 export const EXPECTED_ERA_START = {
   powerball: "2018-04-19",  // 6/40 + PB → 7/35 + PB
-  setforlife: "2020-08-01", // 8/37 → 7/44
+  setforlife: "2020-03-23", // 8/37 → 7/44 (SetForLife744 product start — data-pinned)
   ozlotto: "2022-05-01"     // 7/45 + 2 supps → 7/47 + 3 supps
 };
 const ERA_TOLERANCE_DAYS = 200;
@@ -94,9 +101,13 @@ export function matchesMatrix(d, m) {
  * means the game changed format and ORACLE_GAMES needs updating, which must
  * fail loudly rather than silently compute stats on a stale matrix.
  */
-export function detectEra(draws, matrix, { includeLegacy = true } = {}) {
-  const list = (includeLegacy ? draws.slice() : draws.filter((d) => !d.legacy))
+export function detectEra(draws, matrix, { includeLegacy = true, eraFloor = null } = {}) {
+  const scoped = (includeLegacy ? draws.slice() : draws.filter((d) => !d.legacy))
     .sort((a, b) => a.draw - b.draw);
+  // eraFloor: hard lower bound for pool changes that widen within the same
+  // counts (e.g. 6/44 → 6/45) — invisible to per-draw matrix matching.
+  const list = eraFloor ? scoped.filter((d) => d.draw >= eraFloor.draw) : scoped;
+  const flooredOut = scoped.length - list.length;
   if (!list.length) throw new Error("detectEra: no draws");
   if (!matchesMatrix(list[list.length - 1], matrix)) {
     throw new Error(
@@ -107,14 +118,60 @@ export function detectEra(draws, matrix, { includeLegacy = true } = {}) {
   let start = list.length - 1;
   while (start > 0 && matchesMatrix(list[start - 1], matrix)) start--;
   const era = list.slice(start);
+  /* boundaryKind:
+   *   "matrix" — the walk stopped on a shape change: a REAL format boundary.
+   *   "floor"  — the start is an eraFloor pool-alignment anchor.
+   *   "edge"   — the era spans all available data: the API's published
+   *              history starts here, NOT necessarily the matrix era. Callers
+   *              must not present this as a format boundary (see
+   *              classifyBoundary for anchor-based refinement). */
+  const boundaryKind = start > 0 ? "matrix" : flooredOut > 0 ? "floor" : "edge";
   return {
     draws: era,
     startDraw: era[0].draw,
     startDate: era[0].date,
     startYear: Number(era[0].date.slice(0, 4)),
     total: era.length,
-    discardedOlder: start
+    discardedOlder: start,
+    flooredOut,
+    boundaryKind
   };
+}
+
+/**
+ * Final boundary classification for display: an "edge" era whose start sits
+ * on a known matrix-change anchor IS a matrix boundary (Set for Life — the
+ * 7/44 product begins exactly at the relaunch). An unanchored "edge" is just
+ * available-history depth (TattsLotto: 6/45 since 1985, API depth 1997).
+ */
+export function classifyBoundary(gameKey, era) {
+  if (era.boundaryKind !== "edge") return era.boundaryKind;
+  const sanity = sanityCheckEraStart(gameKey, era.startDate);
+  return sanity && sanity.ok ? "matrix" : "edge";
+}
+
+/**
+ * Pool-contamination scan: for each ball, the longest era PREFIX in which it
+ * never appears (mains + supps). A hidden narrower pool (the 6/44 story)
+ * shows up as an absurdly long absent prefix for the top ball(s). Returns
+ * violations where P(absence | true pool) < maxProbability.
+ */
+export function poolCoverageViolations(eraDraws, matrix, maxProbability = 1e-6) {
+  const perDraw = matrix.drawn + matrix.supps;
+  const missChance = 1 - perDraw / matrix.pool;
+  const firstSeen = new Array(matrix.pool + 1).fill(-1);
+  eraDraws.forEach((d, i) => {
+    for (const n of d.numbers.concat(d.supps || [])) {
+      if (firstSeen[n] === -1) firstSeen[n] = i;
+    }
+  });
+  const violations = [];
+  for (let n = 1; n <= matrix.pool; n++) {
+    const prefix = firstSeen[n] === -1 ? eraDraws.length : firstSeen[n];
+    const probability = Math.pow(missChance, prefix);
+    if (probability < maxProbability) violations.push({ ball: n, absentPrefix: prefix, probability });
+  }
+  return violations;
 }
 
 /** Compare a detected era start against its approximate known anchor. */
@@ -131,15 +188,21 @@ export function sanityCheckEraStart(gameKey, startDate) {
 
 /**
  * Per-ball frequency + current absence streak over the era.
- * MAIN numbers only. `gap[n]` = draws elapsed since ball n last appeared
- * (0 = appeared in the latest draw; never appeared = total, sorts as most
- * overdue). Arrays are 1-indexed by ball; index 0 is unused.
+ * MAIN numbers only by default. `gap[n]` = draws elapsed since ball n last
+ * appeared (0 = appeared in the latest draw; never appeared = total, sorts
+ * as most overdue). Arrays are 1-indexed by ball; index 0 is unused.
+ *
+ * countSupps (default false — no behaviour change): supplementaries come out
+ * of the same barrel, so enabling adds their 2–3 observations per draw to
+ * the HOT/COLD/OVERDUE sample size. Documented knob only — not wired to the
+ * UI; the shipped doctrine counts mains only.
  */
-export function computeStats(eraDraws, pool) {
+export function computeStats(eraDraws, pool, { countSupps = false } = {}) {
   const freq = new Array(pool + 1).fill(0);
   const lastIdx = new Array(pool + 1).fill(-1);
   eraDraws.forEach((d, i) => {
-    for (const n of d.numbers) {
+    const balls = countSupps ? d.numbers.concat(d.supps || []) : d.numbers;
+    for (const n of balls) {
       if (isIntIn(n, 1, pool)) { freq[n]++; lastIdx[n] = i; }
     }
   });
@@ -275,12 +338,15 @@ export async function getOracleContext(gameKey, {
     if (!Array.isArray(draws) || draws.length === 0) {
       throw new Error(`${game.name}: draw data empty or malformed`);
     }
-    const era = detectEra(draws, game.matrix, { includeLegacy });
+    const era = detectEra(draws, game.matrix, { includeLegacy, eraFloor: game.eraFloor });
     const stats = computeStats(era.draws, game.matrix.pool);
+    const boundary = classifyBoundary(gameKey, era);
     log?.info?.(
       `The Oracle · ${game.name}: era starts ${era.startDate} (draw #${era.startDraw}) — ` +
       `${era.total} draws` +
-      (era.discardedOlder ? `, ${era.discardedOlder} pre-era draws excluded` : "")
+      (era.discardedOlder ? `, ${era.discardedOlder} pre-era draws excluded` : "") +
+      (era.flooredOut ? `, ${era.flooredOut} draws below the ${game.eraFloor.reason} floor excluded` : "") +
+      (boundary === "edge" ? " — start of AVAILABLE HISTORY, not a format boundary" : "")
     );
     const sanity = sanityCheckEraStart(gameKey, era.startDate);
     if (sanity && !sanity.ok) {
@@ -290,7 +356,7 @@ export async function getOracleContext(gameKey, {
         `check draw data / matrix config`
       );
     }
-    return { game, era, stats };
+    return { game, era, stats, boundary };
   })();
 
   ctxCache.set(cacheKey, promise);

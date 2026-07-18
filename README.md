@@ -30,16 +30,21 @@ Second tab: era-aware "predictor" over the real draw history. **For entertainmen
 
 Play formats: TattsLotto 7, Oz Lotto 8, Powerball 7 mains (PowerHit — all 20 Powerballs covered, PB barrel hidden), Set for Life 2×7 (rank modes give two disjoint lines, ORACLE two independent draws), Weekday Windfall 7. Tap a ball for its stat ("drawn N× in M draws since year"). Stats count main numbers only.
 
-**Era filter:** stats only ever use the current-matrix era, auto-detected per game by walking back from the latest draw until the record shape stops matching (Powerball 6→7 mains 2018-04-19, Oz Lotto +1 supp 2022-05-17, Set for Life 7/44 product start 2020-03-23). Weekday Windfall includes legacy Mon & Wed Lotto draws (same 6/45 matrix, `legacy: true` in the data, `includeLegacy` option). Detected boundaries are sanity-checked against known change dates and logged to the console.
+**Era filter:** stats only ever use the current-matrix era, auto-detected per game by walking back from the latest draw until the record shape stops matching (Powerball 6→7 mains 2018-04-19, Oz Lotto +1 supp 2022-05-17, Set for Life 7/44 product start 2020-03-23). Weekday Windfall includes legacy Mon & Wed Lotto draws (`legacy: true` in the data, `includeLegacy` option) **floored at draw #2303 (2004-05-12)**: before the May 2004 national alignment Mon & Wed Lotto ran a 6/44 pool, which passes every 6/45 shape check but never draws ball 45 (665 such draws in the data, P ≈ 10⁻⁵³ under 6/45) — the audit's pool-coverage scan guards this class of contamination permanently. The UI distinguishes a real format boundary from mere API history depth: TattsLotto's 6/45 matrix predates the published data (1997), so its status line reads "since 1997-02-01 **(available history)**" rather than implying a boundary.
 
-**Data:** `data/draws/<game>.json` — complete published history from The Lott's public results API (~11k draws; cross-validated against an independent archive). A weekly GitHub Action (`.github/workflows/update-draws.yml`) runs `npm run update-draws`, re-validates, and commits. The service worker precaches the JSON (Oracle works offline) and uses stale-while-revalidate for it, so weekly data lands without a `sw.js` version bump.
+**Data:** `data/draws/<game>.json` — complete published history from The Lott's public results API (~11k draws; cross-validated against an independent archive). A weekly GitHub Action (`.github/workflows/update-draws.yml`) runs `npm run update-draws`, runs the reconciliation audit, re-validates, and commits. The service worker precaches the JSON (Oracle works offline) and uses stale-while-revalidate for it, so weekly data lands without a `sw.js` version bump.
+
+**Audit:** `npm run audit` reconciles every game offline — per-draw matrix conformance (hard fail), min/max ball + mains/supps-count histograms, hidden-pool coverage scan, per-year max-ball timeline, and calendar-cadence math vs actual counts (all games currently delta +0, including Weekday Windfall's +Friday cadence change at #4392 / 2024-05-20). `--full` rebuilds of the updater also log every API page (window, count, first/last draw#) and hard-fail on window-tiling errors or suspected holes.
+
+**countSupps (documented knob, off by default):** `computeStats(draws, pool, { countSupps: true })` also counts supplementaries — they come from the same barrel, so enabling adds their 2–3 observations per draw to the HOT/COLD/OVERDUE sample size. The shipped doctrine counts main numbers only; the knob is not wired to the UI.
 
 ## Local dev
 
 ```powershell
 npm run serve          # python http.server on :8080
 npm test               # RNG chi-square + Oracle predictor/era validation
-npm run update-draws   # incremental draw-history refresh (--full rebuilds)
+npm run audit          # offline data reconciliation (matrix/coverage/cadence)
+npm run update-draws   # incremental draw-history refresh (--full rebuilds + page log)
 npm run icons          # regenerate icons/ from SVG (sharp, canvas fallback)
 ```
 

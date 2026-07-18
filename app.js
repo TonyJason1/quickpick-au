@@ -395,9 +395,12 @@ async function refreshOraclePanel() {
     const ctx = await getOracleContext(gameKey);
     if (state.game !== gameKey || state.view !== "oracle") return; // stale
     const era = ctx.era;
+    // "edge" = the API's published depth, NOT a format boundary — say so.
+    const suffix = ctx.boundary === "edge"
+      ? " (available history)"
+      : game.hasLegacy ? " (6/45 era; incl. Mon & Wed Lotto)" : "";
     els.oracleStatus.textContent =
-      `Era: ${era.total.toLocaleString("en-AU")} draws since ${era.startDate}` +
-      (game.hasLegacy ? " (incl. Mon & Wed Lotto)" : "");
+      `Era: ${era.total.toLocaleString("en-AU")} draws since ${era.startDate}${suffix}`;
   } catch {
     if (state.game !== gameKey || state.view !== "oracle") return;
     els.oracleStatus.textContent =

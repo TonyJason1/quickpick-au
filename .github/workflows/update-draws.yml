@@ -30,6 +30,9 @@ jobs:
       - name: Fetch latest draws (incremental)
         run: node scripts/update-draws.mjs
 
+      - name: Reconciliation audit (matrix, coverage, cadence)
+        run: node scripts/audit-draws.mjs
+
       - name: Validate updated data
         run: node test/predictor.test.mjs
 

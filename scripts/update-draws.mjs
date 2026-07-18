@@ -21,7 +21,7 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { ORACLE_GAMES, detectEra, sanityCheckEraStart } from "../js/predictor.js";
+import { ORACLE_GAMES, classifyBoundary, detectEra, sanityCheckEraStart } from "../js/predictor.js";
 
 const API_BASE = "https://data.api.thelott.com/sales/vmax/web/data/lotto";
 const COMPANY = "Tattersalls";
@@ -146,19 +146,35 @@ async function readExisting(file) {
  * Stops at the store boundary (incremental) or after two consecutive empty
  * pages (start of published history — one empty page is not trusted, in case
  * the API has a hole or hiccups on a single window).
+ *
+ * Pagination audit (--full logs every page): windows must tile the walked
+ * range exactly (adjacent, non-overlapping — asserted), Σ page draws must
+ * equal unique draws + cross-page dupes (counted by the caller's merge), and
+ * an EMPTY window strictly between non-empty ones is a suspected API hole —
+ * flagged loudly because the resulting gap would silently truncate history.
  */
-async function fetchProduct(source, latestByProduct, storedMax, stats) {
+async function fetchProduct(source, latestByProduct, storedMax, stats, { logPages }) {
   const latest = latestByProduct.get(source.product) ?? source.lastKnownDraw;
   if (!latest) throw new Error(`${source.product}: latest draw number unknown`);
   const stopAt = storedMax != null ? storedMax - INCREMENTAL_OVERLAP : null;
   const out = [];
+  const pages = [];
   let emptyStreak = 0;
   let hi = latest;
   for (let page = 0; page < MAX_PAGES_PER_PRODUCT; page++) {
     if (hi < 1 || (stopAt != null && hi < stopAt)) break;
     const lo = Math.max(1, hi - PAGE + 1);
+    if (pages.length && pages[pages.length - 1].lo !== hi + 1) {
+      throw new Error(`${source.product}: page windows do not tile (${pages[pages.length - 1].lo} vs ${hi + 1})`);
+    }
     const draws = await fetchDrawRange(source.product, lo, hi);
     stats.requests++;
+    const nums = draws.map((d) => d.DrawNumber);
+    pages.push({ lo, hi, count: draws.length, first: nums.length ? Math.max(...nums) : null, last: nums.length ? Math.min(...nums) : null });
+    if (logPages) {
+      console.log(`    page ${String(pages.length).padStart(3)}: window #${lo}–#${hi} → ${String(draws.length).padStart(2)} draws` +
+        (draws.length ? ` (first #${Math.max(...nums)}, last #${Math.min(...nums)})` : " (empty)"));
+    }
     if (draws.length === 0) {
       if (++emptyStreak >= 2 || lo === 1) break;
     } else {
@@ -168,6 +184,20 @@ async function fetchProduct(source, latestByProduct, storedMax, stats) {
     hi = lo - 1;
     await sleep(REQUEST_DELAY_MS);
   }
+  // suspected holes: empty windows with data both above and below them
+  const lastNonEmpty = pages.map((p) => p.count > 0).lastIndexOf(true);
+  pages.forEach((p, i) => {
+    if (p.count === 0 && i < lastNonEmpty) {
+      console.warn(`  ! ${source.product}: EMPTY window #${p.lo}–#${p.hi} between non-empty pages — possible API hole, history may be truncated`);
+      stats.suspectedHoles++;
+    }
+  });
+  const sum = pages.reduce((a, p) => a + p.count, 0);
+  const unique = new Set(out.map((d) => d.DrawNumber)).size;
+  if (logPages) {
+    console.log(`    ${source.product}: ${pages.length} pages, ${sum} rows, ${unique} unique draws, ${sum - unique} cross-page dupes`);
+  }
+  if (sum !== out.length) throw new Error(`${source.product}: page accounting mismatch (${sum} vs ${out.length})`);
   return out;
 }
 
@@ -188,7 +218,7 @@ async function updateGame(gameKey, { full }) {
   const file = `${DATA_DIR}${game.file}.json`;
   const existing = full ? [] : await readExisting(file);
   const byDraw = new Map(existing.map((d) => [d.draw, d]));
-  const stats = { requests: 0 };
+  const stats = { requests: 0, suspectedHoles: 0 };
 
   const latestByProduct = await fetchLatestByProduct();
   stats.requests++;
@@ -203,7 +233,7 @@ async function updateGame(gameKey, { full }) {
     const storedMax = storedOfProduct.length
       ? Math.max(...storedOfProduct.map((d) => d.draw))
       : null;
-    const apiDraws = await fetchProduct(source, latestByProduct, full ? null : storedMax, stats);
+    const apiDraws = await fetchProduct(source, latestByProduct, full ? null : storedMax, stats, { logPages: full });
     for (const apiDraw of apiDraws) {
       const rec = toRecord(apiDraw, source, gameKey);
       if (!rec) continue;
@@ -226,7 +256,8 @@ async function updateGame(gameKey, { full }) {
   await rename(tmp, file);
 
   // Doctrine: log era start + draw count, via the exact detection the app runs.
-  const era = detectEra(draws, game.matrix);
+  const era = detectEra(draws, game.matrix, { eraFloor: game.eraFloor });
+  const boundary = classifyBoundary(gameKey, era);
   const sanity = sanityCheckEraStart(gameKey, era.startDate);
   console.log(
     `  ${gameKey}: ${draws.length} draws (${draws[0].date} → ${draws[draws.length - 1].date}), ` +
@@ -236,10 +267,15 @@ async function updateGame(gameKey, { full }) {
   console.log(
     `    era: starts ${era.startDate} (draw #${era.startDraw}) — ${era.total} draws` +
     (era.discardedOlder ? `, ${era.discardedOlder} pre-era draws excluded` : "") +
+    (era.flooredOut ? `, ${era.flooredOut} pre-floor draws excluded (${game.eraFloor.reason})` : "") +
+    (boundary === "edge" ? " [START OF AVAILABLE HISTORY, not a format boundary]" : "") +
     (sanity ? ` [expected ~${sanity.expected}: ${sanity.ok ? "OK" : `OFF BY ${sanity.deltaDays}d`}]` : "")
   );
   if (sanity && !sanity.ok) {
     throw new Error(`${gameKey}: detected era start ${era.startDate} is ${sanity.deltaDays} days from expected ${sanity.expected}`);
+  }
+  if (stats.suspectedHoles > 0) {
+    throw new Error(`${gameKey}: ${stats.suspectedHoles} suspected API hole(s) — rerun with --full and inspect the page log`);
   }
   return { gameKey, total: draws.length, added };
 }
