@@ -1,17 +1,21 @@
 {
   "name": "quickpick-au",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "type": "module",
   "description": "Random number generator PWA for Australian lottery games",
   "scripts": {
     "icons": "node scripts/make-icons.mjs",
-    "test": "node test/rng.test.mjs && node test/predictor.test.mjs",
+    "test": "npm run test:core && npm run test:dom",
+    "test:core": "node test/rng.test.mjs && node test/predictor.test.mjs && node test/marginals.test.mjs && node test/ingest.test.mjs && node test/freshness.test.mjs && node test/history.test.mjs && node test/sw.test.mjs && node test/workflows.test.mjs && node test/version.test.mjs",
+    "test:dom": "node test/reveal.test.mjs && node test/a11y.test.mjs",
+    "marginals": "node test/fixtures/make-marginals.mjs",
     "update-draws": "node scripts/update-draws.mjs",
     "audit": "node scripts/audit-draws.mjs",
     "serve": "python3 -m http.server 8080"
   },
   "devDependencies": {
+    "jsdom": "^29.1.1",
     "sharp": "^0.33.5"
   }
 }

@@ -6,6 +6,8 @@ import { drawLine, shuffled } from "./rng.js";
 import {
   ORACLE_GAMES, ORACLE_MAX_LINES, generateOracleLines, getOracleContext, tooltipText
 } from "./js/predictor.js";
+import { clearHistory, loadHistory, saveHistory } from "./js/history.js";
+import { pillsHTML, revealBall, revealRemaining } from "./js/reveal.js";
 
 /* ---------------------------------------------------------------- games */
 const GAMES = {
@@ -20,8 +22,6 @@ const GAMES = {
 
 /* ---------------------------------------------------------------- state */
 const PREFS_KEY = "qp_prefs_v1";
-const HIST_KEY = "qp_history_v1";
-const HIST_MAX = 100;
 
 const state = {
   game: "tattslotto",
@@ -109,7 +109,8 @@ const els = {
   tabPick: $("tabPick"), tabOracle: $("tabOracle"), oracleCard: $("oracleCard"),
   pickControls: $("pickControls"), oracleCtls: $("oracleCtls"),
   oPicksVal: $("oPicksVal"), oLinesVal: $("oLinesVal"),
-  oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote")
+  oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote"),
+  revealStatus: $("revealStatus")
 };
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -379,8 +380,12 @@ function selectView(view) {
   const oracle = view === "oracle";
   // The Oracle has no draw history for Custom — fall back to a real game.
   if (oracle && state.game === "custom") selectGame("tattslotto");
-  els.tabPick.setAttribute("aria-selected", String(!oracle));
-  els.tabOracle.setAttribute("aria-selected", String(oracle));
+  // aria-selected + roving tabindex: only the active tab is in the tab order,
+  // the pair is then traversed with arrow keys (ARIA tabs pattern).
+  for (const [tab, on] of [[els.tabPick, !oracle], [els.tabOracle, oracle]]) {
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+  }
   els.oracleCard.hidden = !oracle;
   els.pickControls.hidden = oracle;
   els.barNote.hidden = !oracle;
@@ -397,8 +402,8 @@ function syncOracleCtls() {
   if (!game) return;
   const picks = oraclePicksFor(state.game);
   const lines = oracleLinesFor(state.game);
-  els.oPicksVal.textContent = String(picks);
-  els.oLinesVal.textContent = String(lines);
+  setSpin(els.oPicksVal, picks, game.minPicks, game.maxPicks);
+  setSpin(els.oLinesVal, lines, 1, ORACLE_MAX_LINES);
   for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
     const dir = parseInt(btn.dataset.dir, 10);
     btn.disabled = btn.dataset.oq === "picks"
@@ -407,18 +412,21 @@ function syncOracleCtls() {
   }
 }
 
-function stepOracleQty(which, dir) {
+function stepOracleQty(which, dir, jump = null) {
   const key = state.game;
   const game = ORACLE_GAMES[key];
   if (!game) return;
-  if (which === "picks") {
-    state.oracle.picks[key] = clamp(oraclePicksFor(key) + dir, game.minPicks, game.maxPicks);
-  } else {
-    state.oracle.lines[key] = clamp(oracleLinesFor(key) + dir, 1, ORACLE_MAX_LINES);
-  }
+  const [lo, hi] = which === "picks" ? [game.minPicks, game.maxPicks] : [1, ORACLE_MAX_LINES];
+  const current = which === "picks" ? oraclePicksFor(key) : oracleLinesFor(key);
+  const next = jump === "min" ? lo : jump === "max" ? hi : clamp(current + dir, lo, hi);
+  if (which === "picks") state.oracle.picks[key] = next;
+  else state.oracle.lines[key] = next;
   savePrefs();
   syncOracleCtls();
 }
+
+wireSpin(els.oPicksVal, (dir, jump) => stepOracleQty("picks", dir, jump));
+wireSpin(els.oLinesVal, (dir, jump) => stepOracleQty("lines", dir, jump));
 
 // oracle steppers (same press-and-hold repeat as the pick-tab steppers)
 for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
@@ -460,8 +468,46 @@ async function refreshOraclePanel() {
   }
 }
 
-els.tabPick.addEventListener("click", () => { if (!state.animating) selectView("pick"); });
-els.tabOracle.addEventListener("click", () => { if (!state.animating) selectView("oracle"); });
+const TABS = [els.tabPick, els.tabOracle];
+const viewOf = (tab) => (tab === els.tabOracle ? "oracle" : "pick");
+
+for (const tab of TABS) {
+  tab.addEventListener("click", () => { if (!state.animating) selectView(viewOf(tab)); });
+  tab.addEventListener("keydown", (e) => {
+    const i = TABS.indexOf(tab);
+    const next =
+      e.key === "ArrowRight" || e.key === "ArrowDown" ? TABS[(i + 1) % TABS.length] :
+      e.key === "ArrowLeft" || e.key === "ArrowUp" ? TABS[(i + TABS.length - 1) % TABS.length] :
+      e.key === "Home" ? TABS[0] :
+      e.key === "End" ? TABS[TABS.length - 1] : null;
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+    if (!state.animating) selectView(viewOf(next));
+  });
+}
+
+/** Keep a role="spinbutton" value span announceable when it changes. */
+function setSpin(el, value, min, max) {
+  el.textContent = String(value);
+  el.setAttribute("aria-valuenow", String(value));
+  el.setAttribute("aria-valuemin", String(min));
+  el.setAttribute("aria-valuemax", String(max));
+}
+
+/** Arrow/Home/End on a spinbutton, as the role promises. */
+function wireSpin(el, step) {
+  el.addEventListener("keydown", (e) => {
+    const dir =
+      e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 :
+      e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
+    const jump = e.key === "Home" ? "min" : e.key === "End" ? "max" : null;
+    if (!dir && !jump) return;
+    e.preventDefault();
+    if (state.animating) return;
+    step(dir, jump);
+  });
+}
 
 /* ----------------------------------------------------------- controls */
 function syncQty() {
@@ -476,11 +522,11 @@ els.qtySlider.addEventListener("input", () => {
 function syncCustomUI() {
   const c = state.custom;
   c.picks = clamp(c.picks, 1, Math.min(20, c.pool - 1)); // always enforced < N
-  els.cPoolVal.textContent = String(c.pool);
-  els.cPicksVal.textContent = String(c.picks);
+  setSpin(els.cPoolVal, c.pool, 2, 99);
+  setSpin(els.cPicksVal, c.picks, 1, Math.min(20, c.pool - 1));
   els.cExtraOn.checked = c.extraOn;
   els.cExtraRow.hidden = !c.extraOn;
-  els.cExtraPoolVal.textContent = String(c.extraPool);
+  setSpin(els.cExtraPoolVal, c.extraPool, 2, 99);
 }
 
 function stepCustom(which, dir) {
@@ -549,7 +595,12 @@ async function onDraw() {
 
   const instant = reduceMotion.matches;
   renderResults(spec, lines, !instant);
-  if (instant) { chamber.renderOnce(); pbChamber.renderOnce(); return; }
+  if (instant) {
+    chamber.renderOnce();
+    pbChamber.renderOnce();
+    announceDraw(spec, lines);
+    return;
+  }
 
   // 2) Presentation — animate line 1 only.
   state.animating = true;
@@ -559,15 +610,16 @@ async function onDraw() {
   startLoop();
 
   try {
-    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot("main", n));
+    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot(spec, "main", n));
     if (spec.extra && lines[0].extra != null && !skipRequested) {
-      await animateLine(pbChamber, [lines[0].extra], (n) => fillNextSlot("extra", n));
+      await animateLine(pbChamber, [lines[0].extra], (n) => fillNextSlot(spec, "extra", n));
     }
-    if (skipRequested) fillAllRemaining(lines[0]);
+    if (skipRequested) fillAllRemaining(spec, lines[0]);
   } finally {
     chamber.flushExtractions();
     pbChamber.flushExtractions();
     finalizeLineOne(spec, lines[0]);
+    announceDraw(spec, lines);
     state.animating = false;
     els.drawBtn.disabled = false;
     els.skipHint.hidden = true;
@@ -614,18 +666,24 @@ async function onOracleDraw() {
 
   const instant = reduceMotion.matches;
   renderResults(spec, lines, !instant);
-  if (instant) { chamber.renderOnce(); els.drawBtn.disabled = false; return; }
+  if (instant) {
+    chamber.renderOnce();
+    announceDraw(spec, lines);
+    els.drawBtn.disabled = false;
+    return;
+  }
 
   state.animating = true;
   skipRequested = false;
   els.skipHint.hidden = false;
   startLoop();
   try {
-    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot("main", n));
-    if (skipRequested) fillAllRemaining(lines[0]);
+    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot(spec, "main", n));
+    if (skipRequested) fillAllRemaining(spec, lines[0]);
   } finally {
     chamber.flushExtractions();
     finalizeLineOne(spec, lines[0]);
+    announceDraw(spec, lines);
     state.animating = false;
     els.drawBtn.disabled = false;
     els.skipHint.hidden = true;
@@ -653,21 +711,9 @@ async function animateLine(ch, nums, onRelease) {
 /* ------------------------------------------------------------ results */
 let lastDraw = null; // { spec, lines }
 
-function pillHTML(n, extra = false, placeholder = false, tip = null) {
-  const tipAttrs = tip ? ` data-tip="${tip}" title="${tip}" aria-label="Ball ${n} — ${tip}"` : "";
-  return `<span class="pill${extra ? " extra" : ""}${placeholder ? " placeholder" : ""}"${tipAttrs}>${placeholder ? "" : n}</span>`;
-}
-
-/** Pills for one line; Oracle draws carry per-ball era-stat tooltips. */
-function pillsHTML(spec, line, placeholder) {
-  const tipFor = spec.oracle
-    ? (n) => tooltipText(spec.oracle.ctx.stats, n)
-    : () => null;
-  let pills = line.nums.map((n) => pillHTML(n, false, placeholder, tipFor(n))).join("");
-  if (line.extra != null) {
-    pills += `<span class="extra-sep">${spec.extra.label}</span>` + pillHTML(line.extra, true, placeholder);
-  }
-  return pills;
+/** Per-ball era-stat tooltip for Oracle draws; null for plain quick picks. */
+function tipperFor(spec) {
+  return spec.oracle ? (n) => tooltipText(spec.oracle.ctx.stats, n) : null;
 }
 
 function lineText(spec, line) {
@@ -688,7 +734,9 @@ function renderResults(spec, lines, animateFirst) {
     const ph = animateFirst && i === 0;
     row.innerHTML =
       `<span class="line-no">${i + 1}</span>` +
-      `<span class="pills">${pillsHTML(spec, line, ph)}</span>` +
+      `<span class="pills">${pillsHTML(line, {
+        tipFor: tipperFor(spec), extraLabel: spec.extra?.label, placeholder: ph
+      })}</span>` +
       `<button type="button" class="copy-btn" aria-label="Copy line ${i + 1}">⧉</button>`;
     row.querySelector(".copy-btn").addEventListener("click", (e) =>
       copyText(lineText(spec, line), e.currentTarget)
@@ -705,46 +753,92 @@ function renderResults(spec, lines, animateFirst) {
   els.resultsCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function fillNextSlot(kind, n) {
-  const row = els.resultsList.querySelector('.line[data-idx="0"]');
-  if (!row) return;
-  const sel = kind === "extra" ? ".pill.extra.placeholder" : ".pill.placeholder:not(.extra)";
-  const slot = row.querySelector(sel);
-  if (!slot) return;
-  slot.classList.remove("placeholder");
-  slot.classList.add("pop");
-  slot.textContent = String(n);
+const lineOne = () => els.resultsList.querySelector('.line[data-idx="0"]');
+
+/* Each ball lands in its OWN slot (js/reveal.js addresses by data-n), so the
+ * digit and its tooltip can never disagree mid-reveal. */
+function fillNextSlot(spec, kind, n) {
+  const tipFor = tipperFor(spec);
+  return revealBall(lineOne(), n, {
+    extra: kind === "extra",
+    tip: kind === "extra" || !tipFor ? null : tipFor(n)
+  });
 }
 
-function fillAllRemaining(line) {
-  for (const n of line.nums) fillNextSlot("main", n);
-  if (line.extra != null) fillNextSlot("extra", line.extra);
+function fillAllRemaining(spec, line) {
+  revealRemaining(lineOne(), line, { tipFor: tipperFor(spec) });
 }
 
+/* No sorted rebuild needed any more — value-addressed slots mean the line is
+ * already in order. This just guarantees nothing is left hidden if the
+ * animation was cut short. */
 function finalizeLineOne(spec, line) {
-  // Rebuild line 1 sorted (balls were released in random order).
-  const row = els.resultsList.querySelector('.line[data-idx="0"]');
-  if (!row) return;
-  row.querySelector(".pills").innerHTML = pillsHTML(spec, line, false);
+  fillAllRemaining(spec, line);
 }
 
-/* tap-to-show stat bubble for Oracle pills (mobile has no hover) */
+/* Stat bubble for Oracle pills. Pointer taps auto-dismiss (mobile has no
+ * hover); keyboard focus keeps it up until blur or Escape. The bubble itself
+ * is aria-hidden — the pill's aria-label already carries the same text, so
+ * announcing both would just double up. */
 let tipTimer = 0;
 const tipBubble = document.createElement("div");
 tipBubble.className = "tip-bubble";
+tipBubble.setAttribute("aria-hidden", "true");
 els.resultsCard.appendChild(tipBubble);
-els.resultsList.addEventListener("pointerdown", (e) => {
-  const pill = e.target.closest(".pill[data-tip]");
-  if (!pill) return;
+
+function showTip(pill, { sticky = false } = {}) {
   const cardBox = els.resultsCard.getBoundingClientRect();
   const box = pill.getBoundingClientRect();
   tipBubble.textContent = pill.dataset.tip;
-  tipBubble.style.left = `${clamp(box.left + box.width / 2 - cardBox.left, 80, cardBox.width - 80)}px`;
+  tipBubble.style.left = `${clamp(box.left + box.width / 2 - cardBox.left, 80, Math.max(80, cardBox.width - 80))}px`;
   tipBubble.style.top = `${box.top - cardBox.top - 6}px`;
   tipBubble.classList.add("show");
   clearTimeout(tipTimer);
-  tipTimer = setTimeout(() => tipBubble.classList.remove("show"), 2000);
+  if (!sticky) tipTimer = setTimeout(hideTip, 2000);
+}
+function hideTip() {
+  clearTimeout(tipTimer);
+  tipBubble.classList.remove("show");
+}
+const tipTarget = (e) => e.target.closest?.(".pill[data-tip]");
+
+els.resultsList.addEventListener("pointerdown", (e) => {
+  const pill = tipTarget(e);
+  if (pill) showTip(pill);
 });
+els.resultsList.addEventListener("focusin", (e) => {
+  const pill = tipTarget(e);
+  if (pill) showTip(pill, { sticky: true });
+});
+els.resultsList.addEventListener("focusout", (e) => {
+  if (tipTarget(e)) hideTip();
+});
+els.resultsList.addEventListener("keydown", (e) => {
+  const pill = tipTarget(e);
+  if (!pill) return;
+  if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    e.preventDefault();
+    showTip(pill, { sticky: true });
+  } else if (e.key === "Escape") {
+    hideTip();
+  }
+});
+
+/**
+ * One coalesced announcement per draw. #resultsList used to be aria-live, so
+ * filling it ball by ball fired an announcement per release — up to 20 a draw,
+ * several of them naming the wrong ball before H1 was fixed — and then
+ * finalizeLineOne re-announced the whole line.
+ */
+function announceDraw(spec, lines) {
+  if (!els.revealStatus) return;
+  const first = lines[0];
+  const extra = first.extra != null ? `, ${spec.extra.label} ${first.extra}` : "";
+  const rest = lines.length > 1
+    ? ` ${lines.length - 1} further line${lines.length > 2 ? "s" : ""} listed below.`
+    : "";
+  els.revealStatus.textContent = `${spec.name}. Line 1: ${first.nums.join(", ")}${extra}.${rest}`;
+}
 
 els.copyAllBtn.addEventListener("click", (e) => {
   if (!lastDraw) return;
@@ -776,26 +870,20 @@ async function copyText(text, btn) {
 }
 
 /* ------------------------------------------------------------ history */
-function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
-  catch { return []; }
-}
-
+/* Parsing + shape-checking lives in js/history.js: a corrupt qp_history_v1
+ * blob is discarded, never thrown, so it can never abort module init. */
 function pushHistory(spec, lines) {
-  const hist = loadHistory();
-  hist.unshift({
+  saveHistory(localStorage, {
     game: state.game,
     name: spec.name,
     ts: Date.now(),
     extraLabel: spec.extra ? spec.extra.label : null,
     lines: lines.map((l) => ({ n: l.nums, e: l.extra }))
   });
-  try { localStorage.setItem(HIST_KEY, JSON.stringify(hist.slice(0, HIST_MAX))); }
-  catch { /* non-fatal */ }
 }
 
 function renderHistory() {
-  const hist = loadHistory();
+  const hist = loadHistory(localStorage);
   els.historyCount.textContent = String(hist.length);
   els.historyList.innerHTML = "";
   const fmt = new Intl.DateTimeFormat("en-AU", {
@@ -819,7 +907,7 @@ function renderHistory() {
 
 els.clearHistoryBtn.addEventListener("click", () => {
   if (!confirm("Clear all draw history?")) return;
-  try { localStorage.removeItem(HIST_KEY); } catch { /* ignore */ }
+  clearHistory(localStorage);
   renderHistory();
 });
 

@@ -27,11 +27,14 @@
       <p class="tagline">Crypto-random picks. The machine is just for show.</p>
     </header>
 
-    <!-- Section tabs -->
-    <nav class="tabs" role="tablist" aria-label="Sections">
-      <button type="button" class="tab" id="tabPick" role="tab" aria-selected="true">Quick Pick</button>
-      <button type="button" class="tab" id="tabOracle" role="tab" aria-selected="false">The Oracle</button>
-    </nav>
+    <!-- Section tabs. Roving tabindex + arrow keys are wired in app.js;
+         aria-controls links each tab to its panel further down the page. -->
+    <div class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" class="tab" id="tabPick" role="tab"
+              aria-selected="true" aria-controls="pickControls" tabindex="0">Quick Pick</button>
+      <button type="button" class="tab" id="tabOracle" role="tab"
+              aria-selected="false" aria-controls="oracleCard" tabindex="-1">The Oracle</button>
+    </div>
 
     <!-- 1. Game selector -->
     <nav class="chips" id="chips" aria-label="Choose game"></nav>
@@ -49,32 +52,39 @@
     </section>
 
     <!-- The Oracle — one unified era-weighted draw -->
-    <section class="card oracle-card" id="oracleCard" hidden>
+    <section class="card oracle-card" id="oracleCard" role="tabpanel"
+             aria-labelledby="tabOracle" tabindex="0" hidden>
       <p class="oracle-blurb">Secure random draw, gently tilted by era frequency and overdue streaks. Tap a revealed ball for its stats.</p>
       <p class="matrix-line oracle-status" id="oracleStatus">Loading draw history…</p>
       <p class="matrix-line pb-note" id="pbNote" hidden>PowerHit-style play: mains only — <strong>all 20 Powerballs covered</strong>.</p>
+      <!-- Values are role="spinbutton" so a change announces itself; without
+           that, pressing +/- gave screen-reader users no feedback at all. -->
       <div class="oracle-ctls" id="oracleCtls">
         <div class="qty-ctl">
-          <span class="qty-label">Numbers</span>
+          <span class="qty-label" id="oPicksLabel">Numbers</span>
           <button type="button" class="step-btn sm" data-oq="picks" data-dir="-1" aria-label="Fewer numbers">−</button>
-          <span class="qty-val" id="oPicksVal">7</span>
+          <span class="qty-val" id="oPicksVal" role="spinbutton" tabindex="0"
+                aria-labelledby="oPicksLabel" aria-valuenow="7" aria-valuemin="6" aria-valuemax="20">7</span>
           <button type="button" class="step-btn sm" data-oq="picks" data-dir="1" aria-label="More numbers">+</button>
         </div>
         <div class="qty-ctl">
-          <span class="qty-label">Lines</span>
+          <span class="qty-label" id="oLinesLabel">Lines</span>
           <button type="button" class="step-btn sm" data-oq="lines" data-dir="-1" aria-label="Fewer lines">−</button>
-          <span class="qty-val" id="oLinesVal">1</span>
+          <span class="qty-val" id="oLinesVal" role="spinbutton" tabindex="0"
+                aria-labelledby="oLinesLabel" aria-valuenow="1" aria-valuemin="1" aria-valuemax="10">1</span>
           <button type="button" class="step-btn sm" data-oq="lines" data-dir="1" aria-label="More lines">+</button>
         </div>
       </div>
     </section>
 
     <!-- 2 + 3. Controls -->
-    <section class="card controls" id="pickControls">
+    <section class="card controls" id="pickControls" role="tabpanel"
+             aria-labelledby="tabPick" tabindex="0">
       <div class="ctl-row">
         <div class="ctl-label">
           <span>Lines per draw</span>
-          <span class="spec" id="qtyVal">1</span>
+          <!-- decorative duplicate: the range input below announces the value -->
+          <span class="spec" id="qtyVal" aria-hidden="true">1</span>
         </div>
         <div class="stepper" data-step="qty">
           <button type="button" class="step-btn" data-dir="-1" aria-label="Fewer lines">−</button>
@@ -85,7 +95,9 @@
 
       <div id="customCtls" hidden>
         <div class="ctl-row">
-          <div class="ctl-label"><span>Range: 1 to</span><span class="spec" id="cPoolVal">45</span></div>
+          <div class="ctl-label"><span id="cPoolLabel">Range: 1 to</span><span class="spec" id="cPoolVal"
+               role="spinbutton" tabindex="0" aria-labelledby="cPoolLabel"
+               aria-valuenow="45" aria-valuemin="2" aria-valuemax="99">45</span></div>
           <div class="stepper" data-step="cpool">
             <button type="button" class="step-btn" data-dir="-1" aria-label="Smaller range">−</button>
             <div class="step-track"></div>
@@ -93,7 +105,9 @@
           </div>
         </div>
         <div class="ctl-row">
-          <div class="ctl-label"><span>How many numbers</span><span class="spec" id="cPicksVal">6</span></div>
+          <div class="ctl-label"><span id="cPicksLabel">How many numbers</span><span class="spec" id="cPicksVal"
+               role="spinbutton" tabindex="0" aria-labelledby="cPicksLabel"
+               aria-valuenow="6" aria-valuemin="1" aria-valuemax="20">6</span></div>
           <div class="stepper" data-step="cpicks">
             <button type="button" class="step-btn" data-dir="-1" aria-label="Fewer numbers">−</button>
             <div class="step-track"></div>
@@ -108,7 +122,9 @@
           </label>
         </div>
         <div class="ctl-row" id="cExtraRow" hidden>
-          <div class="ctl-label"><span>Extra ball range: 1 to</span><span class="spec" id="cExtraPoolVal">20</span></div>
+          <div class="ctl-label"><span id="cExtraPoolLabel">Extra ball range: 1 to</span><span class="spec" id="cExtraPoolVal"
+               role="spinbutton" tabindex="0" aria-labelledby="cExtraPoolLabel"
+               aria-valuenow="20" aria-valuemin="2" aria-valuemax="99">20</span></div>
           <div class="stepper" data-step="cextrapool">
             <button type="button" class="step-btn" data-dir="-1" aria-label="Smaller extra range">−</button>
             <div class="step-track"></div>
@@ -126,7 +142,11 @@
         <h2>Your numbers</h2>
         <button type="button" class="ghost-btn" id="copyAllBtn">Copy all</button>
       </div>
-      <div id="resultsList" aria-live="polite"></div>
+      <!-- Not a live region: filling it ball by ball fired one announcement per
+           release (up to 20 a draw). One coalesced summary goes to #revealStatus
+           instead, once the line is complete. -->
+      <div id="resultsList"></div>
+      <p id="revealStatus" class="sr-only" role="status" aria-live="polite"></p>
     </section>
 
     <!-- History -->

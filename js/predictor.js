@@ -85,6 +85,52 @@ export const EXPECTED_ERA_START = {
 };
 const ERA_TOLERANCE_DAYS = 200;
 
+/**
+ * EXACT era pins — the immutable historical boundaries. Unlike
+ * EXPECTED_ERA_START (a fuzzy ±200d sanity anchor) these are hard equality
+ * checks, asserted by both scripts/update-draws.mjs at INGEST and the test
+ * suite. History does not move, so a mismatch is always one of: corrupted
+ * API payload, a real format change, or the published-history depth shifting.
+ * All three demand a human. Bump an anchor only after verifying which it was.
+ *
+ * `kind` is the classifyBoundary() result: "matrix" a real format change,
+ * "floor" an eraFloor pool alignment, "edge" the start of available history.
+ */
+export const ERA_ANCHORS = {
+  tattslotto:      { startDraw: 1621, startDate: "1997-02-01", kind: "edge" },
+  ozlotto:         { startDraw: 1474, startDate: "2022-05-17", kind: "matrix" },
+  powerball:       { startDraw: 1144, startDate: "2018-04-19", kind: "matrix" },
+  setforlife:      { startDraw: 1691, startDate: "2020-03-23", kind: "matrix" },
+  weekdaywindfall: { startDraw: 2303, startDate: "2004-05-12", kind: "floor" }
+};
+
+/**
+ * Every matrix each game has ACTUALLY run, derived from the stored history
+ * (see the shape census in scripts/audit-draws.mjs output). The ingest path
+ * accepts a fetched draw only if it matches one of these — which rejects
+ * empty arrays, out-of-pool balls, duplicates and wrong counts in a single
+ * structural check, without hand-rolled bounds tests that drift.
+ *
+ * Index 0 is always the CURRENT matrix (=== ORACLE_GAMES[key].matrix).
+ * Weekday Windfall's pre-2004 6/44 window is deliberately absent: a 6/44 draw
+ * satisfies the 6/45 matrix (44 ⊂ 45), so it needs no entry here — eraFloor,
+ * not matrix matching, is what excludes it (see ORACLE_GAMES.weekdaywindfall).
+ */
+export const KNOWN_MATRICES = {
+  tattslotto: [{ pool: 45, drawn: 6, supps: 2, pb: null }],
+  ozlotto: [
+    { pool: 47, drawn: 7, supps: 3, pb: null },  // #1474+ (2022-05-17)
+    { pool: 45, drawn: 7, supps: 2, pb: null }   // #609–#1473
+  ],
+  powerball: [
+    { pool: 35, drawn: 7, supps: 0, pb: 20 },    // #1144+ (2018-04-19)
+    { pool: 40, drawn: 6, supps: 0, pb: 20 },    // #877–#1143
+    { pool: 45, drawn: 5, supps: 0, pb: 45 }     // #1–#876
+  ],
+  setforlife: [{ pool: 44, drawn: 7, supps: 2, pb: null }],
+  weekdaywindfall: [{ pool: 45, drawn: 6, supps: 2, pb: null }]
+};
+
 /* ---------------------------------------------------------- era detection */
 
 function isIntIn(v, lo, hi) {

@@ -268,6 +268,45 @@ check("stats: supplementaries and pb are excluded from frequency", () => {
   eq(s.freq.slice(1), [1, 1, 0, 0, 0, 0, 0, 0, 0, 0], "mains only");
 });
 
+/* CONSERVATION IDENTITY — the supplementary-leak class guard.
+ *
+ * Mains-only counting means the per-ball frequency array must sum to exactly
+ * era.total × matrix.drawn. A supplementary leak of ANY size shows up here
+ * immediately, and the with-supps total is asserted as the value the sum must
+ * NOT take. This is the check that settled the review's "drawn 325x" question:
+ * TattsLotto sums to 1,539×6 and Weekday Windfall to 2,433×6, exactly, so no
+ * supp observation is reaching the tooltip on any game.
+ *
+ * Also pins the gap/frequency duality: a ball has gap === total if and only if
+ * it was never drawn, which is what makes never-seen balls sort as most overdue.
+ */
+for (const [key, game] of Object.entries(ORACLE_GAMES)) {
+  check(`stats: ${key} sum(freq) === era draws x mains per draw (supp-leak guard)`, () => {
+    const m = game.matrix;
+    const era = detectEra(realData(game.file), m, { eraFloor: game.eraFloor });
+    const stats = computeStats(era.draws, m.pool);
+    const sum = stats.freq.reduce((a, b) => a + b, 0);
+
+    eq(sum, era.total * m.drawn, `${key} mains-only conservation`);
+    if (m.supps > 0) {
+      ok(sum !== era.total * (m.drawn + m.supps),
+        `${key}: sum equals the WITH-SUPPS total (${era.total * (m.drawn + m.supps)}) — supplementaries are leaking into the stats`);
+    }
+
+    // the documented knob must land on the with-supps total, and only there
+    const leaky = computeStats(era.draws, m.pool, { countSupps: true });
+    eq(leaky.freq.reduce((a, b) => a + b, 0), era.total * (m.drawn + m.supps),
+      `${key} countSupps:true conservation`);
+
+    // gap/frequency duality
+    for (let n = 1; n <= m.pool; n++) {
+      ok(stats.gap[n] <= stats.total, `${key} ball ${n}: gap ${stats.gap[n]} > total ${stats.total}`);
+      ok((stats.gap[n] === stats.total) === (stats.freq[n] === 0),
+        `${key} ball ${n}: gap===total must mean never drawn (gap ${stats.gap[n]}, freq ${stats.freq[n]})`);
+    }
+  });
+}
+
 check("modes: deterministic picks where the metric has no ties", () => {
   const s = computeStats(TINY, 10);
   eq(pickLine(s, "hot", 2), [1, 2], "hot top-2");

@@ -19,9 +19,12 @@
  * ends at #4391 (2024-05-15), MondayWednesdayFridayLotto starts #4392.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { ORACLE_GAMES, classifyBoundary, detectEra, sanityCheckEraStart } from "../js/predictor.js";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  ERA_ANCHORS, KNOWN_MATRICES, ORACLE_GAMES, classifyBoundary, detectEra,
+  matchesMatrix, poolCoverageViolations, sanityCheckEraStart
+} from "../js/predictor.js";
 
 const API_BASE = "https://data.api.thelott.com/sales/vmax/web/data/lotto";
 const COMPANY = "Tattersalls";
@@ -98,31 +101,56 @@ async function fetchDrawRange(product, min, max) {
 
 const numAsc = (a, b) => a - b;
 
-/** API draw → repo record. Returns null (and logs) on malformed input. */
+const isIntArray = (a) => Array.isArray(a) && a.every((v) => Number.isInteger(v));
+
+/**
+ * API draw → repo record, or a rejection with a reason.
+ *
+ * Two gates. The envelope gate rejects anything we cannot even shape into a
+ * record (draw number, date, numbers array). The STRUCTURAL gate then demands
+ * the finished record match a matrix the game has actually run
+ * (KNOWN_MATRICES) — one check that covers empty arrays, out-of-pool balls,
+ * duplicate balls and wrong counts, all of which the previous
+ * `Number.isInteger(v) && v > 0` test waved through.
+ *
+ * Rejections are FATAL to the run (see updateGame). With every historical
+ * matrix enumerated, a legitimate draw can never be rejected — so a rejection
+ * means either a hostile/garbled payload or a real format change, and both
+ * must stop the pipeline rather than silently shrink the file.
+ */
 function toRecord(apiDraw, source, gameKey) {
+  const reject = (reason) =>
+    ({ rec: null, reason: `${reason} — ${JSON.stringify(apiDraw).slice(0, 160)}` });
+
+  if (!apiDraw || typeof apiDraw !== "object") return reject("not an object");
   const { DrawNumber, DrawDate, PrimaryNumbers, SecondaryNumbers } = apiDraw;
   const date = typeof DrawDate === "string" ? DrawDate.slice(0, 10) : null;
-  const ints = (a) => Array.isArray(a) && a.every((v) => Number.isInteger(v) && v > 0);
-  if (!Number.isInteger(DrawNumber) || DrawNumber <= 0 ||
-      !date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !ints(PrimaryNumbers)) {
-    console.error(`  ! ${gameKey}: skipping malformed API draw ${JSON.stringify(apiDraw).slice(0, 120)}`);
-    return null;
-  }
-  const secondary = ints(SecondaryNumbers) ? SecondaryNumbers : [];
+  if (!Number.isInteger(DrawNumber) || DrawNumber <= 0) return reject("bad DrawNumber");
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return reject("bad DrawDate");
+  if (Number.isNaN(Date.parse(`${date}T00:00:00Z`))) return reject("DrawDate not a real date");
+  if (!isIntArray(PrimaryNumbers)) return reject("PrimaryNumbers not an integer array");
+
+  const secondary = isIntArray(SecondaryNumbers) ? SecondaryNumbers : [];
   const rec = { draw: DrawNumber, date, numbers: [...PrimaryNumbers].sort(numAsc) };
   if (gameKey === "powerball") {
     // SecondaryNumbers carries the single Powerball in every Powerball era.
-    if (secondary.length !== 1) {
-      console.warn(`  ! powerball draw #${DrawNumber}: expected 1 secondary, got ${secondary.length}`);
-    }
+    if (secondary.length !== 1) return reject(`expected exactly 1 secondary, got ${secondary.length}`);
     rec.supps = [];
-    rec.pb = secondary.length ? secondary[0] : null;
+    rec.pb = secondary[0];
   } else {
     rec.supps = [...secondary].sort(numAsc);
     rec.pb = null;
   }
   if (source.legacy) rec.legacy = true;
-  return rec;
+
+  if (!KNOWN_MATRICES[gameKey].some((m) => matchesMatrix(rec, m))) {
+    return reject(
+      `matches no known ${gameKey} matrix ` +
+      `(${rec.numbers.length} mains + ${rec.supps.length} supps${rec.pb != null ? " + PB" : ""}, ` +
+      `max ball ${Math.max(0, ...rec.numbers, ...rec.supps)})`
+    );
+  }
+  return { rec, reason: null };
 }
 
 /** One draw per line — stable, reviewable git diffs on weekly updates. */
@@ -213,6 +241,65 @@ function logFormatTransitions(gameKey, draws) {
   }
 }
 
+/**
+ * Every structural guarantee the repo data must hold, run against the PARSED
+ * BYTES of the candidate file (not the in-memory array), so serialization
+ * bugs are caught too. Throws on the first violation; returns the era on
+ * success. This is the ingest gate — nothing reaches data/draws/ without it.
+ */
+function validateDataFile(gameKey, game, draws, stats) {
+  const fail = (msg) => { throw new Error(`${gameKey}: ${msg}`); };
+
+  if (!Array.isArray(draws) || !draws.length) fail("serialized file is not a non-empty array");
+  for (let i = 1; i < draws.length; i++) {
+    if (!(draws[i].draw > draws[i - 1].draw)) {
+      fail(`draw numbers not strictly ascending at index ${i} (#${draws[i - 1].draw} → #${draws[i].draw})`);
+    }
+  }
+
+  const era = detectEra(draws, game.matrix, { eraFloor: game.eraFloor });
+  const boundary = classifyBoundary(gameKey, era);
+
+  // Exact history pin — the check that turns a poisoned payload into an
+  // ingest failure instead of a silently truncated era three steps later.
+  const anchor = ERA_ANCHORS[gameKey];
+  if (anchor) {
+    if (era.startDraw !== anchor.startDraw || era.startDate !== anchor.startDate) {
+      fail(
+        `era start moved to #${era.startDraw} ${era.startDate}, anchored at ` +
+        `#${anchor.startDraw} ${anchor.startDate} — corrupt payload, a real format ` +
+        `change, or the published-history depth shifted. Verify, then update ERA_ANCHORS.`
+      );
+    }
+    if (boundary !== anchor.kind) {
+      fail(`era boundary classified "${boundary}", anchored as "${anchor.kind}"`);
+    }
+  }
+
+  const offMatrix = era.draws.filter((d) => !matchesMatrix(d, game.matrix));
+  if (offMatrix.length) {
+    fail(`${offMatrix.length} era draws violate the current matrix, e.g. ${JSON.stringify(offMatrix[0])}`);
+  }
+
+  const contamination = poolCoverageViolations(era.draws, game.matrix);
+  if (contamination.length) {
+    const c = contamination[0];
+    fail(
+      `hidden narrower pool: ball ${c.ball} absent for the first ${c.absentPrefix} era draws ` +
+      `(P ≈ ${c.probability.toExponential(1)})`
+    );
+  }
+
+  const sanity = sanityCheckEraStart(gameKey, era.startDate);
+  if (sanity && !sanity.ok) {
+    fail(`detected era start ${era.startDate} is ${sanity.deltaDays} days from expected ${sanity.expected}`);
+  }
+  if (stats.suspectedHoles > 0) {
+    fail(`${stats.suspectedHoles} suspected API hole(s) — rerun with --full and inspect the page log`);
+  }
+  return { era, boundary, sanity };
+}
+
 async function updateGame(gameKey, { full }) {
   const game = ORACLE_GAMES[gameKey];
   const file = `${DATA_DIR}${game.file}.json`;
@@ -224,6 +311,7 @@ async function updateGame(gameKey, { full }) {
   stats.requests++;
 
   let added = 0, corrected = 0;
+  const rejected = [];
   for (const source of SOURCES[gameKey]) {
     const storedOfProduct = existing.filter((d) => !!d.legacy === !!source.legacy);
     if (source.closed && storedOfProduct.length && !full) {
@@ -235,8 +323,12 @@ async function updateGame(gameKey, { full }) {
       : null;
     const apiDraws = await fetchProduct(source, latestByProduct, full ? null : storedMax, stats, { logPages: full });
     for (const apiDraw of apiDraws) {
-      const rec = toRecord(apiDraw, source, gameKey);
-      if (!rec) continue;
+      const { rec, reason } = toRecord(apiDraw, source, gameKey);
+      if (!rec) {
+        rejected.push(reason);
+        console.error(`  ! ${gameKey}: REJECTED ${reason}`);
+        continue;
+      }
       const old = byDraw.get(rec.draw);
       if (!old) added++;
       else if (JSON.stringify(old) !== JSON.stringify(rec)) {
@@ -247,18 +339,34 @@ async function updateGame(gameKey, { full }) {
     }
   }
 
+  // A rejection can only mean a garbled payload or a real format change, since
+  // KNOWN_MATRICES enumerates every shape the game has ever run. Either way the
+  // run must stop before anything is persisted.
+  if (rejected.length) {
+    throw new Error(
+      `${rejected.length} API draw(s) rejected by structural validation — refusing to write. ` +
+      `First: ${rejected[0]}`
+    );
+  }
+
   const draws = [...byDraw.values()].sort((a, b) => a.draw - b.draw);
   if (!draws.length) throw new Error(`${gameKey}: no draws fetched and none stored`);
 
+  /* --- write candidate → validate the parsed bytes → publish (or discard) --- */
   await mkdir(DATA_DIR, { recursive: true });
   const tmp = `${file}.tmp`;
   await writeFile(tmp, serialize(draws), "utf8");
+  let era, boundary, sanity;
+  try {
+    const roundTripped = JSON.parse(await readFile(tmp, "utf8"));
+    ({ era, boundary, sanity } = validateDataFile(gameKey, game, roundTripped, stats));
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw new Error(`${err.message} — candidate discarded, ${file} left untouched`);
+  }
   await rename(tmp, file);
 
   // Doctrine: log era start + draw count, via the exact detection the app runs.
-  const era = detectEra(draws, game.matrix, { eraFloor: game.eraFloor });
-  const boundary = classifyBoundary(gameKey, era);
-  const sanity = sanityCheckEraStart(gameKey, era.startDate);
   console.log(
     `  ${gameKey}: ${draws.length} draws (${draws[0].date} → ${draws[draws.length - 1].date}), ` +
     `+${added} new${corrected ? `, ${corrected} corrected` : ""}, ${stats.requests} requests`
@@ -269,37 +377,43 @@ async function updateGame(gameKey, { full }) {
     (era.discardedOlder ? `, ${era.discardedOlder} pre-era draws excluded` : "") +
     (era.flooredOut ? `, ${era.flooredOut} pre-floor draws excluded (${game.eraFloor.reason})` : "") +
     (boundary === "edge" ? " [START OF AVAILABLE HISTORY, not a format boundary]" : "") +
-    (sanity ? ` [expected ~${sanity.expected}: ${sanity.ok ? "OK" : `OFF BY ${sanity.deltaDays}d`}]` : "")
+    (sanity ? ` [expected ~${sanity.expected}: ${sanity.ok ? "OK" : `OFF BY ${sanity.deltaDays}d`}]` : "") +
+    ` [anchor #${ERA_ANCHORS[gameKey].startDraw} ${ERA_ANCHORS[gameKey].startDate} OK]`
   );
-  if (sanity && !sanity.ok) {
-    throw new Error(`${gameKey}: detected era start ${era.startDate} is ${sanity.deltaDays} days from expected ${sanity.expected}`);
-  }
-  if (stats.suspectedHoles > 0) {
-    throw new Error(`${gameKey}: ${stats.suspectedHoles} suspected API hole(s) — rerun with --full and inspect the page log`);
-  }
   return { gameKey, total: draws.length, added };
 }
 
 /* ------------------------------------------------------------------ main */
 
-const args = process.argv.slice(2);
-const full = args.includes("--full");
-const gameArg = args.includes("--game") ? args[args.indexOf("--game") + 1] : null;
-const gameKeys = gameArg ? [gameArg] : Object.keys(SOURCES);
-if (gameArg && !SOURCES[gameArg]) {
-  console.error(`unknown game "${gameArg}" — expected one of: ${Object.keys(SOURCES).join(", ")}`);
-  process.exit(2);
+/* Pure ingest surface, exported so test/ingest.test.mjs can exercise the
+ * validation gates directly without any network. */
+export { toRecord, validateDataFile, serialize, SOURCES };
+
+async function main() {
+  const args = process.argv.slice(2);
+  const full = args.includes("--full");
+  const gameArg = args.includes("--game") ? args[args.indexOf("--game") + 1] : null;
+  const gameKeys = gameArg ? [gameArg] : Object.keys(SOURCES);
+  if (gameArg && !SOURCES[gameArg]) {
+    console.error(`unknown game "${gameArg}" — expected one of: ${Object.keys(SOURCES).join(", ")}`);
+    process.exit(2);
+  }
+
+  console.log(`update-draws: ${full ? "FULL rebuild" : "incremental"} — ${gameKeys.join(", ")}\n`);
+  let failed = 0;
+  for (const key of gameKeys) {
+    try {
+      await updateGame(key, { full });
+    } catch (err) {
+      failed++;
+      console.error(`  ✗ ${key}: ${err.message}`);
+    }
+  }
+  console.log(failed ? `\n${failed} game(s) FAILED` : "\nall games updated");
+  process.exit(failed ? 1 : 0);
 }
 
-console.log(`update-draws: ${full ? "FULL rebuild" : "incremental"} — ${gameKeys.join(", ")}\n`);
-let failed = 0;
-for (const key of gameKeys) {
-  try {
-    await updateGame(key, { full });
-  } catch (err) {
-    failed++;
-    console.error(`  ✗ ${key}: ${err.message}`);
-  }
+// Run only as a CLI; importing this module (tests) must have no side effects.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
 }
-console.log(failed ? `\n${failed} game(s) FAILED` : "\nall games updated");
-process.exit(failed ? 1 : 0);
