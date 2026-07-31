@@ -1,17 +1,26 @@
 # Weekly draw-history refresh for The Oracle.
-# Fetches the latest results from The Lott's public API, validates them with
-# the predictor test suite, and commits data/draws/*.json when they changed.
-# No sw.js VERSION bump needed — clients pick the data up via the service
-# worker's stale-while-revalidate rule for data/draws/.
+#
+# Fetches the latest results from The Lott's public API, validates them at
+# ingest, reconciles the files offline, re-runs the zero-dependency test suite,
+# and commits data/draws/*.json when they changed. No sw.js VERSION bump needed
+# — clients pick the data up via the service worker's runtime cache-first +
+# background-refresh rule for data/draws/.
+#
+# SUPPLY CHAIN: this job deliberately never runs `npm install`. Every script and
+# test it invokes depends only on Node builtins and repo code, so no third-party
+# package executes anywhere in the data pipeline. The DOM tests, which do need
+# jsdom, live in ci.yml instead. Keep it that way.
+#
+# Actions are pinned to immutable commit SHAs, not tags: this job holds
+# `contents: write` and pushes to the default branch, so a moved tag on a
+# third-party action would be able to rewrite the app that ships to users.
+# Dependabot (.github/dependabot.yml) keeps the pins current.
 name: Update draw history
 
 on:
   schedule:
     - cron: "0 18 * * 0" # Sunday 18:00 UTC = Monday 04:00 AEST, after Saturday night's draws
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: update-draws
@@ -20,21 +29,27 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # commit refreshed data/draws/
+      issues: write # open a tracking issue when the pipeline breaks
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
       - name: Fetch latest draws (incremental)
         run: node scripts/update-draws.mjs
 
-      - name: Reconciliation audit (matrix, coverage, cadence)
-        run: node scripts/audit-draws.mjs
+      # --strict: the updater has just run, so the data must actually be
+      # current. Without it a silently stalled fetch would still reconcile.
+      - name: Reconciliation audit (matrix, coverage, cadence, freshness)
+        run: node scripts/audit-draws.mjs --strict
 
       - name: Validate updated data
-        run: node test/predictor.test.mjs
+        run: npm run test:core
 
       - name: Commit and push if changed
         run: |
@@ -46,4 +61,50 @@ jobs:
           else
             git commit -m "data: weekly draw history update"
             git push
+          fi
+
+      # A dead pipeline must be loud. Without this the schedule can fail every
+      # week in silence while the app quietly serves ageing data — the exact
+      # failure mode the freshness check in audit-draws.mjs was added to expose.
+      - name: Open a tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          gh label create pipeline-failure \
+            --color B60205 \
+            --description "Weekly draw-update pipeline failure" >/dev/null 2>&1
+
+          body=$(printf '%s\n' \
+            "The weekly draw-history update failed." \
+            "" \
+            "Run: $RUN_URL" \
+            "" \
+            "\`data/draws/\` was **not** updated, so the app keeps serving the last good" \
+            "commit. This is a staleness problem, not a correctness one — but it will" \
+            "become a correctness one if it is left alone." \
+            "" \
+            "Likely causes, in the order the steps run:" \
+            "" \
+            "- **Fetch** — The Lott API unreachable, or a suspected paging hole." \
+            "- **Ingest validation** — a structural reject (a draw matching no known" \
+            "  matrix) or an \`ERA_ANCHORS\` mismatch. Either a real format change or a" \
+            "  garbled payload; both need a human before any anchor is moved." \
+            "- **Audit \`--strict\`** — freshness, cadence, matrix or pool-coverage." \
+            "- **Tests** — an era pin or the mains-only conservation identity." \
+            "" \
+            "This issue is reused while it stays open; each failure adds a comment.")
+
+          existing=$(gh issue list --state open --label pipeline-failure \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null)
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create \
+              --title "Weekly draw update failed" \
+              --body "$body" \
+              --label pipeline-failure
           fi

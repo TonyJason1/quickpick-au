@@ -1,0 +1,25 @@
+# Workflow actions are pinned to immutable commit SHAs (see the note in
+# update-draws.yml). Pins do not update themselves, so Dependabot is what stops
+# them silently rotting into unpatched versions — it rewrites the SHA and the
+# trailing `# vX.Y.Z` comment together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "build"
+    groups:
+      dev-dependencies:
+        patterns: ["*"]
