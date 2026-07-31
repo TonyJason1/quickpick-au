@@ -51,10 +51,14 @@ export function pillHTML(n, { extra = false, placeholder = false, tip = null } =
   if (placeholder) {
     attrs.push('aria-hidden="true"');
   } else if (tip) {
+    // M9: a pill carrying stats is interactive, so it must be reachable and
+    // operable by keyboard — not pointer-only with a `cursor: help` that lies.
     attrs.push(
       `data-tip="${esc(tip)}"`,
       `title="${esc(tip)}"`,
-      `aria-label="${esc(ballLabel(n, tip))}"`
+      `aria-label="${esc(ballLabel(n, tip))}"`,
+      'role="button"',
+      'tabindex="0"'
     );
   }
   return `<span ${attrs.join(" ")}>${placeholder ? "" : n}</span>`;
@@ -97,6 +101,8 @@ export function revealBall(row, n, { extra = false, tip = null } = {}) {
     slot.setAttribute("data-tip", tip);
     slot.setAttribute("title", tip);
     slot.setAttribute("aria-label", ballLabel(n, tip));
+    slot.setAttribute("role", "button");
+    slot.setAttribute("tabindex", "0");
   }
   return true;
 }

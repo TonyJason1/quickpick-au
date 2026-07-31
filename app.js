@@ -109,7 +109,8 @@ const els = {
   tabPick: $("tabPick"), tabOracle: $("tabOracle"), oracleCard: $("oracleCard"),
   pickControls: $("pickControls"), oracleCtls: $("oracleCtls"),
   oPicksVal: $("oPicksVal"), oLinesVal: $("oLinesVal"),
-  oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote")
+  oracleStatus: $("oracleStatus"), pbNote: $("pbNote"), barNote: $("barNote"),
+  revealStatus: $("revealStatus")
 };
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -379,8 +380,12 @@ function selectView(view) {
   const oracle = view === "oracle";
   // The Oracle has no draw history for Custom — fall back to a real game.
   if (oracle && state.game === "custom") selectGame("tattslotto");
-  els.tabPick.setAttribute("aria-selected", String(!oracle));
-  els.tabOracle.setAttribute("aria-selected", String(oracle));
+  // aria-selected + roving tabindex: only the active tab is in the tab order,
+  // the pair is then traversed with arrow keys (ARIA tabs pattern).
+  for (const [tab, on] of [[els.tabPick, !oracle], [els.tabOracle, oracle]]) {
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+  }
   els.oracleCard.hidden = !oracle;
   els.pickControls.hidden = oracle;
   els.barNote.hidden = !oracle;
@@ -397,8 +402,8 @@ function syncOracleCtls() {
   if (!game) return;
   const picks = oraclePicksFor(state.game);
   const lines = oracleLinesFor(state.game);
-  els.oPicksVal.textContent = String(picks);
-  els.oLinesVal.textContent = String(lines);
+  setSpin(els.oPicksVal, picks, game.minPicks, game.maxPicks);
+  setSpin(els.oLinesVal, lines, 1, ORACLE_MAX_LINES);
   for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
     const dir = parseInt(btn.dataset.dir, 10);
     btn.disabled = btn.dataset.oq === "picks"
@@ -407,18 +412,21 @@ function syncOracleCtls() {
   }
 }
 
-function stepOracleQty(which, dir) {
+function stepOracleQty(which, dir, jump = null) {
   const key = state.game;
   const game = ORACLE_GAMES[key];
   if (!game) return;
-  if (which === "picks") {
-    state.oracle.picks[key] = clamp(oraclePicksFor(key) + dir, game.minPicks, game.maxPicks);
-  } else {
-    state.oracle.lines[key] = clamp(oracleLinesFor(key) + dir, 1, ORACLE_MAX_LINES);
-  }
+  const [lo, hi] = which === "picks" ? [game.minPicks, game.maxPicks] : [1, ORACLE_MAX_LINES];
+  const current = which === "picks" ? oraclePicksFor(key) : oracleLinesFor(key);
+  const next = jump === "min" ? lo : jump === "max" ? hi : clamp(current + dir, lo, hi);
+  if (which === "picks") state.oracle.picks[key] = next;
+  else state.oracle.lines[key] = next;
   savePrefs();
   syncOracleCtls();
 }
+
+wireSpin(els.oPicksVal, (dir, jump) => stepOracleQty("picks", dir, jump));
+wireSpin(els.oLinesVal, (dir, jump) => stepOracleQty("lines", dir, jump));
 
 // oracle steppers (same press-and-hold repeat as the pick-tab steppers)
 for (const btn of els.oracleCtls.querySelectorAll(".step-btn")) {
@@ -460,8 +468,46 @@ async function refreshOraclePanel() {
   }
 }
 
-els.tabPick.addEventListener("click", () => { if (!state.animating) selectView("pick"); });
-els.tabOracle.addEventListener("click", () => { if (!state.animating) selectView("oracle"); });
+const TABS = [els.tabPick, els.tabOracle];
+const viewOf = (tab) => (tab === els.tabOracle ? "oracle" : "pick");
+
+for (const tab of TABS) {
+  tab.addEventListener("click", () => { if (!state.animating) selectView(viewOf(tab)); });
+  tab.addEventListener("keydown", (e) => {
+    const i = TABS.indexOf(tab);
+    const next =
+      e.key === "ArrowRight" || e.key === "ArrowDown" ? TABS[(i + 1) % TABS.length] :
+      e.key === "ArrowLeft" || e.key === "ArrowUp" ? TABS[(i + TABS.length - 1) % TABS.length] :
+      e.key === "Home" ? TABS[0] :
+      e.key === "End" ? TABS[TABS.length - 1] : null;
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+    if (!state.animating) selectView(viewOf(next));
+  });
+}
+
+/** Keep a role="spinbutton" value span announceable when it changes. */
+function setSpin(el, value, min, max) {
+  el.textContent = String(value);
+  el.setAttribute("aria-valuenow", String(value));
+  el.setAttribute("aria-valuemin", String(min));
+  el.setAttribute("aria-valuemax", String(max));
+}
+
+/** Arrow/Home/End on a spinbutton, as the role promises. */
+function wireSpin(el, step) {
+  el.addEventListener("keydown", (e) => {
+    const dir =
+      e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 :
+      e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
+    const jump = e.key === "Home" ? "min" : e.key === "End" ? "max" : null;
+    if (!dir && !jump) return;
+    e.preventDefault();
+    if (state.animating) return;
+    step(dir, jump);
+  });
+}
 
 /* ----------------------------------------------------------- controls */
 function syncQty() {
@@ -476,11 +522,11 @@ els.qtySlider.addEventListener("input", () => {
 function syncCustomUI() {
   const c = state.custom;
   c.picks = clamp(c.picks, 1, Math.min(20, c.pool - 1)); // always enforced < N
-  els.cPoolVal.textContent = String(c.pool);
-  els.cPicksVal.textContent = String(c.picks);
+  setSpin(els.cPoolVal, c.pool, 2, 99);
+  setSpin(els.cPicksVal, c.picks, 1, Math.min(20, c.pool - 1));
   els.cExtraOn.checked = c.extraOn;
   els.cExtraRow.hidden = !c.extraOn;
-  els.cExtraPoolVal.textContent = String(c.extraPool);
+  setSpin(els.cExtraPoolVal, c.extraPool, 2, 99);
 }
 
 function stepCustom(which, dir) {
@@ -549,7 +595,12 @@ async function onDraw() {
 
   const instant = reduceMotion.matches;
   renderResults(spec, lines, !instant);
-  if (instant) { chamber.renderOnce(); pbChamber.renderOnce(); return; }
+  if (instant) {
+    chamber.renderOnce();
+    pbChamber.renderOnce();
+    announceDraw(spec, lines);
+    return;
+  }
 
   // 2) Presentation — animate line 1 only.
   state.animating = true;
@@ -568,6 +619,7 @@ async function onDraw() {
     chamber.flushExtractions();
     pbChamber.flushExtractions();
     finalizeLineOne(spec, lines[0]);
+    announceDraw(spec, lines);
     state.animating = false;
     els.drawBtn.disabled = false;
     els.skipHint.hidden = true;
@@ -614,7 +666,12 @@ async function onOracleDraw() {
 
   const instant = reduceMotion.matches;
   renderResults(spec, lines, !instant);
-  if (instant) { chamber.renderOnce(); els.drawBtn.disabled = false; return; }
+  if (instant) {
+    chamber.renderOnce();
+    announceDraw(spec, lines);
+    els.drawBtn.disabled = false;
+    return;
+  }
 
   state.animating = true;
   skipRequested = false;
@@ -626,6 +683,7 @@ async function onOracleDraw() {
   } finally {
     chamber.flushExtractions();
     finalizeLineOne(spec, lines[0]);
+    announceDraw(spec, lines);
     state.animating = false;
     els.drawBtn.disabled = false;
     els.skipHint.hidden = true;
@@ -718,23 +776,69 @@ function finalizeLineOne(spec, line) {
   fillAllRemaining(spec, line);
 }
 
-/* tap-to-show stat bubble for Oracle pills (mobile has no hover) */
+/* Stat bubble for Oracle pills. Pointer taps auto-dismiss (mobile has no
+ * hover); keyboard focus keeps it up until blur or Escape. The bubble itself
+ * is aria-hidden — the pill's aria-label already carries the same text, so
+ * announcing both would just double up. */
 let tipTimer = 0;
 const tipBubble = document.createElement("div");
 tipBubble.className = "tip-bubble";
+tipBubble.setAttribute("aria-hidden", "true");
 els.resultsCard.appendChild(tipBubble);
-els.resultsList.addEventListener("pointerdown", (e) => {
-  const pill = e.target.closest(".pill[data-tip]");
-  if (!pill) return;
+
+function showTip(pill, { sticky = false } = {}) {
   const cardBox = els.resultsCard.getBoundingClientRect();
   const box = pill.getBoundingClientRect();
   tipBubble.textContent = pill.dataset.tip;
-  tipBubble.style.left = `${clamp(box.left + box.width / 2 - cardBox.left, 80, cardBox.width - 80)}px`;
+  tipBubble.style.left = `${clamp(box.left + box.width / 2 - cardBox.left, 80, Math.max(80, cardBox.width - 80))}px`;
   tipBubble.style.top = `${box.top - cardBox.top - 6}px`;
   tipBubble.classList.add("show");
   clearTimeout(tipTimer);
-  tipTimer = setTimeout(() => tipBubble.classList.remove("show"), 2000);
+  if (!sticky) tipTimer = setTimeout(hideTip, 2000);
+}
+function hideTip() {
+  clearTimeout(tipTimer);
+  tipBubble.classList.remove("show");
+}
+const tipTarget = (e) => e.target.closest?.(".pill[data-tip]");
+
+els.resultsList.addEventListener("pointerdown", (e) => {
+  const pill = tipTarget(e);
+  if (pill) showTip(pill);
 });
+els.resultsList.addEventListener("focusin", (e) => {
+  const pill = tipTarget(e);
+  if (pill) showTip(pill, { sticky: true });
+});
+els.resultsList.addEventListener("focusout", (e) => {
+  if (tipTarget(e)) hideTip();
+});
+els.resultsList.addEventListener("keydown", (e) => {
+  const pill = tipTarget(e);
+  if (!pill) return;
+  if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    e.preventDefault();
+    showTip(pill, { sticky: true });
+  } else if (e.key === "Escape") {
+    hideTip();
+  }
+});
+
+/**
+ * One coalesced announcement per draw. #resultsList used to be aria-live, so
+ * filling it ball by ball fired an announcement per release — up to 20 a draw,
+ * several of them naming the wrong ball before H1 was fixed — and then
+ * finalizeLineOne re-announced the whole line.
+ */
+function announceDraw(spec, lines) {
+  if (!els.revealStatus) return;
+  const first = lines[0];
+  const extra = first.extra != null ? `, ${spec.extra.label} ${first.extra}` : "";
+  const rest = lines.length > 1
+    ? ` ${lines.length - 1} further line${lines.length > 2 ? "s" : ""} listed below.`
+    : "";
+  els.revealStatus.textContent = `${spec.name}. Line 1: ${first.nums.join(", ")}${extra}.${rest}`;
+}
 
 els.copyAllBtn.addEventListener("click", (e) => {
   if (!lastDraw) return;
