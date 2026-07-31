@@ -20,10 +20,23 @@ const MATRICES = [
   { label: "Custom 20/99",     pool: 99, picks: 20 }
 ];
 
-/* Upper-tail 95% chi-square critical value, Wilson–Hilferty approximation
- * (accurate to <0.1 for df >= 15; exact-table spot checks: df=44 → 60.48). */
-function chiCrit95(df) {
-  const z = 1.6448536269514722; // Phi^-1(0.95)
+/* Upper-tail chi-square critical value, Wilson–Hilferty approximation
+ * (accurate to <0.1 for df >= 15; exact-table spot checks: df=44 → 60.48).
+ *
+ * alpha = 0.001, NOT 0.05. Seven matrices are tested independently, so at the
+ * 95% level a perfectly correct RNG fails somewhere in 1 - 0.95^7 = 30% of
+ * runs. Measured: the pool-20 Powerball matrix alone exceeded crit95 in 3 of
+ * 40 runs, exactly as the nominal rate predicts. That is not a sensitive test,
+ * it is a coin flip -- and test:core is what the weekly data Action runs, where
+ * a failure now opens a pipeline-failure issue. A 30% false-alarm rate would
+ * make that alert worthless.
+ *
+ * At alpha = 0.001 the family-wise false-positive rate is 1 - 0.999^7 = 0.7%,
+ * while a real weighting or modulo-bias defect lands orders of magnitude past
+ * the critical value. This matches the level predictor.test.mjs already uses,
+ * for the same stated reason. */
+function chiCrit999(df) {
+  const z = 3.0902323061678132; // Phi^-1(0.999)
   const a = 2 / (9 * df);
   return df * Math.pow(1 - a + z * Math.sqrt(a), 3);
 }
@@ -50,7 +63,7 @@ function runMatrix({ label, pool, picks }) {
     chi2 += (d * d) / expected;
   }
   const df = pool - 1;
-  const crit = chiCrit95(df);
+  const crit = chiCrit999(df);
   const pass = badCount === 0 && badDup === 0 && badRange === 0 && chi2 < crit;
   return { label, pool, picks, badCount, badDup, badRange, chi2, df, crit, pass };
 }
@@ -76,7 +89,7 @@ console.log(`\nQuickPick AU — RNG chi-square validation (${N.toLocaleString()}
 console.log(
   pad("Matrix", 18) + pad("pool", 6, true) + pad("picks", 7, true) + pad("lines", 9, true) +
   pad("count✗", 8, true) + pad("dup✗", 6, true) + pad("range✗", 8, true) +
-  pad("chi²", 10, true) + pad("crit95", 9, true) + "  result"
+  pad("chi²", 10, true) + pad("crit999", 9, true) + "  result"
 );
 console.log("-".repeat(88));
 for (const r of rows) {
@@ -92,6 +105,7 @@ console.log(`Validation guards (picks < range enforced, invalid matrices throw):
 
 const allPass = guardsPass && rows.every((r) => r.pass);
 console.log(allPass
-  ? "\nALL MATRICES PASS (α = 0.05, df = pool − 1, Wilson–Hilferty critical values)\n"
+  ? "\nALL MATRICES PASS (α = 0.001, df = pool − 1, Wilson–Hilferty critical values;\n" +
+    "family-wise false-positive rate across the 7 matrices ≈ 0.7%)\n"
   : "\nFAILURE — see table above\n");
 process.exit(allPass ? 0 : 1);
