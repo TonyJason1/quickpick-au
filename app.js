@@ -6,6 +6,7 @@ import { drawLine, shuffled } from "./rng.js";
 import {
   ORACLE_GAMES, ORACLE_MAX_LINES, generateOracleLines, getOracleContext, tooltipText
 } from "./js/predictor.js";
+import { clearHistory, loadHistory, saveHistory } from "./js/history.js";
 
 /* ---------------------------------------------------------------- games */
 const GAMES = {
@@ -20,8 +21,6 @@ const GAMES = {
 
 /* ---------------------------------------------------------------- state */
 const PREFS_KEY = "qp_prefs_v1";
-const HIST_KEY = "qp_history_v1";
-const HIST_MAX = 100;
 
 const state = {
   game: "tattslotto",
@@ -776,26 +775,20 @@ async function copyText(text, btn) {
 }
 
 /* ------------------------------------------------------------ history */
-function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
-  catch { return []; }
-}
-
+/* Parsing + shape-checking lives in js/history.js: a corrupt qp_history_v1
+ * blob is discarded, never thrown, so it can never abort module init. */
 function pushHistory(spec, lines) {
-  const hist = loadHistory();
-  hist.unshift({
+  saveHistory(localStorage, {
     game: state.game,
     name: spec.name,
     ts: Date.now(),
     extraLabel: spec.extra ? spec.extra.label : null,
     lines: lines.map((l) => ({ n: l.nums, e: l.extra }))
   });
-  try { localStorage.setItem(HIST_KEY, JSON.stringify(hist.slice(0, HIST_MAX))); }
-  catch { /* non-fatal */ }
 }
 
 function renderHistory() {
-  const hist = loadHistory();
+  const hist = loadHistory(localStorage);
   els.historyCount.textContent = String(hist.length);
   els.historyList.innerHTML = "";
   const fmt = new Intl.DateTimeFormat("en-AU", {
@@ -819,7 +812,7 @@ function renderHistory() {
 
 els.clearHistoryBtn.addEventListener("click", () => {
   if (!confirm("Clear all draw history?")) return;
-  try { localStorage.removeItem(HIST_KEY); } catch { /* ignore */ }
+  clearHistory(localStorage);
   renderHistory();
 });
 
