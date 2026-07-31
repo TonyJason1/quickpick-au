@@ -7,6 +7,7 @@ import {
   ORACLE_GAMES, ORACLE_MAX_LINES, generateOracleLines, getOracleContext, tooltipText
 } from "./js/predictor.js";
 import { clearHistory, loadHistory, saveHistory } from "./js/history.js";
+import { pillsHTML, revealBall, revealRemaining } from "./js/reveal.js";
 
 /* ---------------------------------------------------------------- games */
 const GAMES = {
@@ -558,11 +559,11 @@ async function onDraw() {
   startLoop();
 
   try {
-    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot("main", n));
+    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot(spec, "main", n));
     if (spec.extra && lines[0].extra != null && !skipRequested) {
-      await animateLine(pbChamber, [lines[0].extra], (n) => fillNextSlot("extra", n));
+      await animateLine(pbChamber, [lines[0].extra], (n) => fillNextSlot(spec, "extra", n));
     }
-    if (skipRequested) fillAllRemaining(lines[0]);
+    if (skipRequested) fillAllRemaining(spec, lines[0]);
   } finally {
     chamber.flushExtractions();
     pbChamber.flushExtractions();
@@ -620,8 +621,8 @@ async function onOracleDraw() {
   els.skipHint.hidden = false;
   startLoop();
   try {
-    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot("main", n));
-    if (skipRequested) fillAllRemaining(lines[0]);
+    await animateLine(chamber, lines[0].nums, (n) => fillNextSlot(spec, "main", n));
+    if (skipRequested) fillAllRemaining(spec, lines[0]);
   } finally {
     chamber.flushExtractions();
     finalizeLineOne(spec, lines[0]);
@@ -652,21 +653,9 @@ async function animateLine(ch, nums, onRelease) {
 /* ------------------------------------------------------------ results */
 let lastDraw = null; // { spec, lines }
 
-function pillHTML(n, extra = false, placeholder = false, tip = null) {
-  const tipAttrs = tip ? ` data-tip="${tip}" title="${tip}" aria-label="Ball ${n} — ${tip}"` : "";
-  return `<span class="pill${extra ? " extra" : ""}${placeholder ? " placeholder" : ""}"${tipAttrs}>${placeholder ? "" : n}</span>`;
-}
-
-/** Pills for one line; Oracle draws carry per-ball era-stat tooltips. */
-function pillsHTML(spec, line, placeholder) {
-  const tipFor = spec.oracle
-    ? (n) => tooltipText(spec.oracle.ctx.stats, n)
-    : () => null;
-  let pills = line.nums.map((n) => pillHTML(n, false, placeholder, tipFor(n))).join("");
-  if (line.extra != null) {
-    pills += `<span class="extra-sep">${spec.extra.label}</span>` + pillHTML(line.extra, true, placeholder);
-  }
-  return pills;
+/** Per-ball era-stat tooltip for Oracle draws; null for plain quick picks. */
+function tipperFor(spec) {
+  return spec.oracle ? (n) => tooltipText(spec.oracle.ctx.stats, n) : null;
 }
 
 function lineText(spec, line) {
@@ -687,7 +676,9 @@ function renderResults(spec, lines, animateFirst) {
     const ph = animateFirst && i === 0;
     row.innerHTML =
       `<span class="line-no">${i + 1}</span>` +
-      `<span class="pills">${pillsHTML(spec, line, ph)}</span>` +
+      `<span class="pills">${pillsHTML(line, {
+        tipFor: tipperFor(spec), extraLabel: spec.extra?.label, placeholder: ph
+      })}</span>` +
       `<button type="button" class="copy-btn" aria-label="Copy line ${i + 1}">⧉</button>`;
     row.querySelector(".copy-btn").addEventListener("click", (e) =>
       copyText(lineText(spec, line), e.currentTarget)
@@ -704,27 +695,27 @@ function renderResults(spec, lines, animateFirst) {
   els.resultsCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function fillNextSlot(kind, n) {
-  const row = els.resultsList.querySelector('.line[data-idx="0"]');
-  if (!row) return;
-  const sel = kind === "extra" ? ".pill.extra.placeholder" : ".pill.placeholder:not(.extra)";
-  const slot = row.querySelector(sel);
-  if (!slot) return;
-  slot.classList.remove("placeholder");
-  slot.classList.add("pop");
-  slot.textContent = String(n);
+const lineOne = () => els.resultsList.querySelector('.line[data-idx="0"]');
+
+/* Each ball lands in its OWN slot (js/reveal.js addresses by data-n), so the
+ * digit and its tooltip can never disagree mid-reveal. */
+function fillNextSlot(spec, kind, n) {
+  const tipFor = tipperFor(spec);
+  return revealBall(lineOne(), n, {
+    extra: kind === "extra",
+    tip: kind === "extra" || !tipFor ? null : tipFor(n)
+  });
 }
 
-function fillAllRemaining(line) {
-  for (const n of line.nums) fillNextSlot("main", n);
-  if (line.extra != null) fillNextSlot("extra", line.extra);
+function fillAllRemaining(spec, line) {
+  revealRemaining(lineOne(), line, { tipFor: tipperFor(spec) });
 }
 
+/* No sorted rebuild needed any more — value-addressed slots mean the line is
+ * already in order. This just guarantees nothing is left hidden if the
+ * animation was cut short. */
 function finalizeLineOne(spec, line) {
-  // Rebuild line 1 sorted (balls were released in random order).
-  const row = els.resultsList.querySelector('.line[data-idx="0"]');
-  if (!row) return;
-  row.querySelector(".pills").innerHTML = pillsHTML(spec, line, false);
+  fillAllRemaining(spec, line);
 }
 
 /* tap-to-show stat bubble for Oracle pills (mobile has no hover) */
